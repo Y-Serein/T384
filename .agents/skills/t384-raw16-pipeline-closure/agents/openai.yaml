@@ -1,0 +1,4 @@
+interface:
+  display_name: "T384 RAW16 Pipeline Closure"
+  short_description: "DVP/DMA 到 NCM 浏览器的 25 FPS 闭环"
+  default_prompt: "Use $t384-raw16-pipeline-closure to continue the T384 384x288 RAW16 end-to-end throughput closure from HANDOFF, change one measured bottleneck at a time, and verify complete frames at 25 FPS."

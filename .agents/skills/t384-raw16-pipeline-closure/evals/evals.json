@@ -1,0 +1,23 @@
+{
+  "skill_name": "t384-raw16-pipeline-closure",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "T384 RAW16 页面源帧率 32 FPS、流帧率 0 FPS，pipeline 已满。找到根因并给下一步，不要造假数据。",
+      "expected_output": "优先检查完整帧起止、半帧 abort 和队列所有权，而不是把高 source FPS 当成功或先改 UI。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "DMA 等效源烧录后只有 22.9 FPS，目标先到 25 FPS。/diag 显示 NCM TX drop=0、pipeline no-slot 很高、HTTP backpressure 增长。继续优化。",
+      "expected_output": "量化缺口，定位 TCP copy/checksum 下游，单变量验证，不继续盲调 ACK/LUT/NCM RAM，并给出 60 秒完整帧验收标准。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "真实 MINI2 板到了，把模拟函数换成 DVP，其他都别重写。需要注意什么？",
+      "expected_output": "保持 source adapter 边界，说明 DMA完成/commit、不可暂停时整帧丢弃、字节序/采样沿/消隐、跨核共享内存和 cache/屏障验证。",
+      "files": []
+    }
+  ]
+}

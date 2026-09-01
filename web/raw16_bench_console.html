@@ -1,0 +1,1047 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8fa">
+  <meta name="description" content="T384 热成像插件实时画面与诊断控制台">
+  <title>T384 · 实时控制台</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --surface: #fff;
+      --muted: #f1f3f6;
+      --ink: #1d1e20;
+      --sub: #697382;
+      --weak: #6d7683;
+      --line: #dde1e6;
+      --strong: #bfc5cd;
+      --action: #202124;
+      --focus: #5577ff;
+      --ok: #14764f;
+      --okbg: #e9f6f0;
+      --warn: #9a6417;
+      --warnbg: #fff5df;
+      --bad: #c43d3d;
+      --badbg: #fff0f0;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html {
+      min-width: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    body { min-height: 100vh; margin: 0; }
+    button, input { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible { outline: 3px solid color-mix(in srgb, var(--focus) 32%, transparent); outline-offset: 2px; }
+
+    .shell {
+      width: min(100%, 640px);
+      min-height: 100vh;
+      margin: auto;
+      border-inline: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .topbar {
+      height: 60px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; }
+    .mark { width: 16px; height: 16px; border-radius: 3px; background: var(--action); }
+    .device, .pill {
+      min-height: 28px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--sub);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .pill::before { width: 7px; height: 7px; border-radius: 50%; content: ""; background: var(--strong); }
+    .pill.ok::before { background: var(--ok); box-shadow: 0 0 0 3px var(--okbg); }
+    .pill.warn::before { background: var(--warn); box-shadow: 0 0 0 3px var(--warnbg); }
+    .pill.bad::before { background: var(--bad); box-shadow: 0 0 0 3px var(--badbg); }
+
+    .nav { height: 49px; padding: 0 24px; display: flex; gap: 24px; border-bottom: 1px solid var(--line); }
+    .tab {
+      position: relative;
+      padding: 0;
+      border: 0;
+      display: flex;
+      align-items: center;
+      background: transparent;
+      color: var(--sub);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab[aria-selected="true"] { color: var(--ink); }
+    .tab[aria-selected="true"]::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--action); content: ""; }
+
+    main { padding: 32px 24px 40px; }
+    .page-head { margin-bottom: 24px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+    .eyebrow { margin: 0 0 8px; color: var(--weak); font-size: 12px; font-weight: 700; letter-spacing: .08em; word-spacing: .08em; text-transform: uppercase; }
+    h1, h2, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: 26px; line-height: 1.22; letter-spacing: -.035em; }
+    h2 { margin-bottom: 3px; font-size: 15px; }
+    .lead, .copy, .help { color: var(--sub); }
+    .lead { max-width: 480px; margin-bottom: 0; font-size: 14px; line-height: 1.6; }
+    .status-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+    .card { margin-top: 16px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+    .card-head { padding: 16px 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
+    .copy { margin-bottom: 0; font-size: 13px; line-height: 1.55; }
+    .body { padding: 20px; }
+
+    .viewer { position: relative; aspect-ratio: 384 / 288; overflow: hidden; display: grid; place-items: center; background: #111315; }
+    .viewer canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
+    .viewer-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #9aa0a6; font: 12px var(--mono); letter-spacing: .06em; }
+    .viewer-overlay { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; }
+    .viewer-overlay .pill { border-color: #373b3f; background: rgba(17,19,21,.78); color: #f2f3f4; backdrop-filter: blur(8px); }
+    .viewer-foot { min-height: 52px; padding: 10px 16px 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); }
+    .viewer-state { min-width: 0; color: var(--sub); font-size: 12px; line-height: 1.45; }
+    .viewer-rate { flex: 0 0 auto; font: 700 14px var(--mono); font-variant-numeric: tabular-nums; }
+
+    .metrics { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metrics > div { min-width: 0; padding: 16px 20px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .metrics > div:nth-child(2n) { border-right: 0; }
+    .metrics > div:nth-last-child(-n+2) { border-bottom: 0; }
+    .metrics dt { margin-bottom: 7px; color: var(--weak); font-size: 12px; }
+    .metrics dd { margin: 0; overflow: hidden; color: var(--ink); font: 700 22px/1.25 var(--mono); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+    .metrics small { color: var(--weak); font: 600 11px var(--mono); }
+
+    .chart-wrap { padding: 16px 20px 12px; }
+    .chart { width: 100%; height: 214px; display: block; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .legend { margin-top: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--weak); font: 11px var(--mono); }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i { width: 14px; height: 2px; background: #202124; }
+    .legend i.secondary { background: #8b93a1; }
+
+    .record-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+    .record-summary > div { min-width: 0; padding: 14px 20px; border-right: 1px solid var(--line); }
+    .record-summary > div:last-child { border-right: 0; }
+    .record-summary span { display: block; margin-bottom: 6px; color: var(--weak); font-size: 12px; }
+    .record-summary strong { display: block; overflow: hidden; font: 700 13px var(--mono); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+    .actions { padding: 16px 20px 20px; display: flex; flex-wrap: wrap; gap: 10px; }
+    .button {
+      min-height: 44px;
+      padding: 0 16px;
+      border: 1px solid var(--strong);
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .button.primary { min-height: 46px; border-color: var(--action); background: var(--action); color: #fff; }
+    .button.small { min-height: 44px; padding-inline: 12px; font-size: 12px; }
+    .button:disabled { opacity: .42; cursor: not-allowed; }
+
+    .note { margin-top: 16px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--muted); color: var(--sub); font-size: 12px; line-height: 1.65; }
+    .note strong { color: var(--ink); }
+    .note.warn { border-color: #ead7af; background: var(--warnbg); color: #74501c; }
+    .note.bad { border-color: #efcaca; background: var(--badbg); color: #943434; }
+
+    .diag-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .diag-row { min-width: 0; padding: 14px 20px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .diag-row:nth-child(2n) { border-right: 0; }
+    .diag-row:nth-last-child(-n+2) { border-bottom: 0; }
+    .diag-row span { display: block; margin-bottom: 6px; color: var(--weak); font-size: 12px; }
+    .diag-row strong { display: block; overflow: hidden; font: 700 13px var(--mono); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+    .footer-action { padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); }
+    .footer-action .help { margin: 0; font-size: 12px; line-height: 1.5; }
+
+    @media (max-width: 560px) {
+      .shell { border-inline: 0; }
+      .topbar, .nav { padding-inline: 16px; }
+      main { padding: 24px 16px 32px; }
+      .page-head { display: block; }
+      .status-row { margin-top: 14px; justify-content: flex-start; }
+      .device { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; }
+      .actions { flex-direction: column; }
+      .actions .button { width: 100%; }
+      .record-summary { grid-template-columns: 1fr; }
+      .record-summary > div { border-right: 0; border-bottom: 1px solid var(--line); }
+      .record-summary > div:last-child { border-bottom: 0; }
+      .footer-action { align-items: stretch; flex-direction: column; }
+    }
+    @media (max-width: 350px) {
+      .topbar { gap: 8px; }
+      .brand { font-size: 12px; }
+      .nav { gap: 20px; }
+      .card-head, .body, .chart-wrap, .actions, .footer-action { padding-inline: 16px; }
+      .metrics > div, .diag-row { padding-inline: 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span><span>T384 实时控制台</span></div>
+      <span class="device">USB NCM · 192.168.18.1</span>
+    </header>
+
+    <nav class="nav" role="tablist" aria-label="设备功能">
+      <button class="tab" id="tab-live" role="tab" aria-selected="true" aria-controls="panel-live" type="button">实时</button>
+      <button class="tab" id="tab-trend" role="tab" aria-selected="false" aria-controls="panel-trend" tabindex="-1" type="button">趋势</button>
+      <button class="tab" id="tab-diag" role="tab" aria-selected="false" aria-controls="panel-diag" tabindex="-1" type="button">诊断</button>
+    </nav>
+
+    <main>
+      <section id="panel-live" role="tabpanel" aria-labelledby="tab-live">
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">RAW16 PIPELINE</p>
+            <h1>实时画面</h1>
+            <p class="lead">采集源通过统一适配接口接入，帧队列、NCM、HTTP 与浏览器处理保持同一条正式链路。</p>
+          </div>
+          <div class="status-row">
+            <span class="pill warn" id="ncmPill" aria-live="polite">正在连接</span>
+            <span class="pill" id="cameraPill">等待相机</span>
+          </div>
+        </div>
+
+        <article class="card">
+          <div class="card-head">
+            <div><h2>RAW16 实时预览</h2><p class="copy">版本化分块 RAW16LE · 自动恢复断线</p></div>
+            <button class="button small" id="streamRetryBtn" type="button">重连画面</button>
+          </div>
+          <div class="viewer">
+            <div class="viewer-placeholder" id="streamPlaceholder">WAITING FOR STREAM</div>
+            <canvas id="stream" width="384" height="288" role="img" aria-label="384×288 RAW16 实时画面"></canvas>
+            <div class="viewer-overlay"><span class="pill warn" id="framePill">正在连接</span><span class="pill ok">RAW16</span></div>
+          </div>
+          <div class="viewer-foot"><span class="viewer-state" id="frameState">正在建立实时流</span><strong class="viewer-rate" id="frameFps">-- FPS</strong></div>
+        </article>
+
+        <article class="card" aria-labelledby="metricTitle">
+          <div class="card-head"><div><h2 id="metricTitle">实时指标</h2><p class="copy">每秒刷新，不自动保存历史。</p></div></div>
+          <dl class="metrics">
+            <div><dt>源帧率</dt><dd id="sourceFps">-- <small>FPS</small></dd></div>
+            <div><dt>流帧率</dt><dd id="streamFps">-- <small>FPS</small></dd></div>
+            <div><dt>已发布帧</dt><dd id="publishedFrames">--</dd></div>
+            <div><dt>采集故障</dt><dd id="captureErrors">--</dd></div>
+          </dl>
+        </article>
+
+        <div class="note"><strong>链路边界：</strong>采集适配器负责提供 384×288 RAW16；固定队列、NCM、HTTP 与浏览器始终复用同一正式链路。当前源类型以上方实时诊断为准；DVP 电气时序、正式测温表和 T640 仍需实物验证。</div>
+      </section>
+
+      <section id="panel-trend" role="tabpanel" aria-labelledby="tab-trend" hidden>
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">LOCAL HISTORY</p>
+            <h1>帧率趋势</h1>
+            <p class="lead">实时窗口只保留最近 180 秒；长期样本按用户操作写入本机浏览器存储。</p>
+          </div>
+          <span class="pill" id="recordPill" aria-live="polite">未记录</span>
+        </div>
+
+        <article class="card">
+          <div class="card-head"><div><h2>实时趋势</h2><p class="copy">深色为设备生成/排队帧率，灰色为浏览器完整接收并渲染帧率。</p></div></div>
+          <div class="chart-wrap">
+            <canvas class="chart" id="chart" role="img" aria-label="最近 180 秒源帧率与流帧率趋势图"></canvas>
+            <div class="legend"><span><i></i>源帧率</span><span><i class="secondary"></i>流帧率</span><span id="windowCount">0 个实时点</span></div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head"><div><h2>本机记录</h2><p class="copy">用户主动开始；不向 T384 设备写入任何历史数据。</p></div></div>
+          <div class="record-summary">
+            <div><span>记录状态</span><strong id="recordState">未开始</strong></div>
+            <div><span>已存样本</span><strong id="storedCount">0</strong></div>
+            <div><span>存储位置</span><strong id="storageTarget">浏览器本机存储</strong></div>
+          </div>
+          <div class="actions">
+            <button class="button primary" id="recordBtn" type="button">开始记录</button>
+            <button class="button" id="exportBtn" type="button" disabled>导出 CSV</button>
+            <button class="button" id="clearBtn" type="button" disabled>清空记录</button>
+          </div>
+        </article>
+
+        <div class="note" id="recordNote"><strong>记录边界：</strong>进入页面不会自动记录。点击“开始记录”后，样本写入当前电脑/手机浏览器的本机数据库，不占用 T384 RAM/Flash；最多保留 86,400 点，达到上限自动暂停。刷新或关闭页面会停止采集，但已写入样本仍保留，直到手动清空。浏览器可能按自身存储策略回收数据，重要记录请及时导出。</div>
+      </section>
+
+      <section id="panel-diag" role="tabpanel" aria-labelledby="tab-diag" hidden>
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">DEVICE DIAGNOSTICS</p>
+            <h1>设备诊断</h1>
+            <p class="lead">只读状态用于区分采集适配器、固定内存流水线、连续流和 NCM 传输问题。</p>
+          </div>
+          <span class="pill warn" id="diagPill" aria-live="polite">等待采样</span>
+        </div>
+
+        <article class="card">
+          <div class="diag-grid">
+            <div class="diag-row"><span>传感器</span><strong id="sensor">--</strong></div>
+            <div class="diag-row"><span>最后帧字节</span><strong id="frameBytes">--</strong></div>
+            <div class="diag-row"><span>NCM TX drop</span><strong id="txDrop">--</strong></div>
+            <div class="diag-row"><span>流背压</span><strong id="backpressure">--</strong></div>
+            <div class="diag-row"><span>流写错误</span><strong id="writeErrors">--</strong></div>
+            <div class="diag-row"><span>最后采样</span><strong id="lastSample">--</strong></div>
+            <div class="diag-row"><span>流连接 / 断开</span><strong id="streamLifecycle">--</strong></div>
+            <div class="diag-row"><span>流水线队列</span><strong id="cameraBuffer">--</strong></div>
+          </div>
+          <div class="footer-action">
+            <p class="help">原始计数器不会生成设备端历史日志。</p>
+            <a class="button" href="/diag" target="_blank" rel="noopener">打开原始诊断</a>
+          </div>
+        </article>
+
+        <div class="note warn" id="diagNote"><strong>连接状态：</strong><span id="diagMessage">正在读取设备状态。</span> <button class="button small" id="diagRetryBtn" type="button" hidden>立即重试</button></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+  (() => {
+    'use strict';
+
+    const $ = id => document.getElementById(id);
+    const CHART_LIMIT = 180;
+    const RAW16_WIDTH = 384;
+    const RAW16_HEIGHT = 288;
+    const RAW16_FRAME_BYTES = RAW16_WIDTH * RAW16_HEIGHT * 2;
+    const RAW16_WIRE_MAGIC = 0x31523354;
+    const RAW16_WIRE_VERSION = 1;
+    const RAW16_CHUNK_HEADER_BYTES = 36;
+    const RAW16_CHUNK_PAYLOAD_MAX = 6144;
+    const CHUNK_FLAG_FRAME_START = 0x0001;
+    const CHUNK_FLAG_FRAME_END = 0x0002;
+    const DB_NAME = 't384-raw16-bench-console';
+    const DB_VERSION = 1;
+    const STORE_NAME = 'fps_samples';
+    const MAX_RECORDED_SAMPLES = 86400;
+    const RAW16_PALETTE = (() => {
+      const words = new Uint32Array(256);
+      const bytes = new Uint8ClampedArray(words.buffer);
+      for (let level = 0; level < 256; level += 1) {
+        const offset = level * 4;
+        if (level < 64) {
+          bytes[offset] = 0;
+          bytes[offset + 1] = level * 2;
+          bytes[offset + 2] = 64 + level * 3;
+        } else if (level < 128) {
+          bytes[offset] = 0;
+          bytes[offset + 1] = 128 + (level - 64) * 2;
+          bytes[offset + 2] = 255 - (level - 64) * 2;
+        } else if (level < 192) {
+          bytes[offset] = (level - 128) * 4;
+          bytes[offset + 1] = 255;
+          bytes[offset + 2] = 127 - (level - 128) * 2;
+        } else {
+          bytes[offset] = 255;
+          bytes[offset + 1] = 255 - (level - 192) * 4;
+          bytes[offset + 2] = 0;
+        }
+        bytes[offset + 3] = 255;
+      }
+      return words;
+    })();
+    const samples = [];
+    let db = null;
+    let dbPromise = null;
+    let storedCount = 0;
+    let recording = false;
+    let hasRecorded = false;
+    let pendingWriteCount = 0;
+    let writeQueue = Promise.resolve();
+    let pollTimer = 0;
+    let failures = 0;
+    let lastGood = 0;
+    let streamTimer = 0;
+    let streamAttempt = 0;
+    let streamLoaded = false;
+    let streamController = null;
+    let streamWatchdogTimer = 0;
+    let streamStartedAt = 0;
+    let lastFrameAt = 0;
+    let browserFrameCount = 0;
+    let browserFpsWindowStart = 0;
+    let browserStreamFps = 0;
+    let previousFrameIndex = null;
+    let browserSequenceGaps = 0;
+    let browserSequenceErrors = 0;
+    let browserDiscardedFrames = 0;
+    let browserProcessMs = 0;
+    let rawImageData = null;
+    let clearConfirmTimer = 0;
+
+    const fmt = value => Number(value || 0).toLocaleString('en-US');
+    const num = (data, key) => Number(data[key] || 0);
+    const fps = (data, key) => num(data, key) / 1000;
+
+    function setPill(element, text, tone = '') {
+      element.textContent = text;
+      element.className = 'pill' + (tone ? ' ' + tone : '');
+    }
+
+    function parseDiag(text) {
+      const data = {};
+      text.trim().split(/\r?\n/).forEach(line => {
+        const split = line.indexOf('=');
+        if (split > 0) data[line.slice(0, split)] = line.slice(split + 1);
+      });
+      return data;
+    }
+
+    function setMetric(id, value, unit = '') {
+      $(id).innerHTML = Number.isFinite(value)
+        ? value.toFixed(1) + (unit ? ' <small>' + unit + '</small>' : '')
+        : '--' + (unit ? ' <small>' + unit + '</small>' : '');
+    }
+
+    function addChartSample(sample) {
+      samples.push(sample);
+      if (samples.length > CHART_LIMIT) samples.shift();
+    }
+
+    function openDatabase() {
+      if (db) return Promise.resolve(db);
+      if (dbPromise) return dbPromise;
+      if (!('indexedDB' in window)) return Promise.reject(new Error('浏览器不支持 IndexedDB'));
+      dbPromise = new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = () => {
+          if (!request.result.objectStoreNames.contains(STORE_NAME)) {
+            request.result.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+          }
+        };
+        request.onsuccess = () => {
+          db = request.result;
+          db.onversionchange = () => { db.close(); db = null; dbPromise = null; };
+          resolve(db);
+        };
+        request.onerror = () => reject(request.error || new Error('无法打开本机记录数据库'));
+      });
+      return dbPromise;
+    }
+
+    function countStored() {
+      return openDatabase().then(database => new Promise((resolve, reject) => {
+        const request = database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).count();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      }));
+    }
+
+    function saveSample(sample) {
+      return openDatabase().then(database => new Promise((resolve, reject) => {
+        const transaction = database.transaction(STORE_NAME, 'readwrite');
+        transaction.objectStore(STORE_NAME).add(sample);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error || new Error('本机记录写入失败'));
+        transaction.onabort = () => reject(transaction.error || new Error('本机记录被中止'));
+      }));
+    }
+
+    function clearStored() {
+      return openDatabase().then(database => new Promise((resolve, reject) => {
+        const transaction = database.transaction(STORE_NAME, 'readwrite');
+        transaction.objectStore(STORE_NAME).clear();
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      }));
+    }
+
+    function readCsvParts() {
+      return openDatabase().then(database => new Promise((resolve, reject) => {
+        const parts = ['\ufefftimestamp,source_fps,stream_fps,capture_faults,ncm_tx_drop\r\n'];
+        let rows = [];
+        const request = database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).openCursor();
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) {
+            if (rows.length) parts.push(rows.join('\r\n') + '\r\n');
+            resolve(parts);
+            return;
+          }
+          const value = cursor.value;
+          rows.push([value.time, value.source.toFixed(3), value.stream.toFixed(3), value.faults, value.txDrop].join(','));
+          if (rows.length >= 4096) { parts.push(rows.join('\r\n') + '\r\n'); rows = []; }
+          cursor.continue();
+        };
+        request.onerror = () => reject(request.error);
+      }));
+    }
+
+    function showRecordError(error) {
+      void error;
+      recording = false;
+      setPill($('recordPill'), '记录失败', 'bad');
+      $('recordState').textContent = '写入失败';
+      $('recordNote').className = 'note bad';
+      $('recordNote').innerHTML = '<strong>记录失败：</strong>本机浏览器存储写入失败，请检查存储权限或先导出已有记录。设备端没有写入任何历史数据。';
+      updateRecordControls();
+    }
+
+    function pauseRecordingAtLimit() {
+      recording = false;
+      $('recordNote').className = 'note warn';
+      $('recordNote').innerHTML = '<strong>已达到记录上限：</strong>为避免浏览器长期运行无限增长，已自动暂停记录。请先导出或清空本机记录后再继续；T384 设备端保持零历史写入。';
+      updateRecordControls();
+    }
+
+    function queueRecordedSample(sample) {
+      if (storedCount + pendingWriteCount >= MAX_RECORDED_SAMPLES) {
+        pauseRecordingAtLimit();
+        return;
+      }
+      pendingWriteCount += 1;
+      writeQueue = writeQueue.then(() => saveSample(sample)).then(() => {
+        pendingWriteCount -= 1;
+        storedCount += 1;
+        $('storedCount').textContent = fmt(storedCount);
+        $('exportBtn').disabled = false;
+        $('clearBtn').disabled = recording;
+        if (storedCount >= MAX_RECORDED_SAMPLES) {
+          pauseRecordingAtLimit();
+        }
+      }).catch(error => {
+        pendingWriteCount -= 1;
+        showRecordError(error);
+      });
+    }
+
+    function updateRecordControls() {
+      $('recordBtn').textContent = recording ? '暂停记录' : (hasRecorded ? '继续记录' : '开始记录');
+      $('recordBtn').className = recording ? 'button primary' : 'button primary';
+      $('recordState').textContent = recording ? '正在记录' : (hasRecorded ? '已暂停' : '未开始');
+      setPill($('recordPill'), recording ? '正在记录' : (hasRecorded ? '已暂停' : '未记录'), recording ? 'ok' : '');
+      $('clearBtn').disabled = recording || storedCount === 0;
+      $('exportBtn').disabled = storedCount === 0;
+    }
+
+    function resetClearConfirmation() {
+      clearTimeout(clearConfirmTimer);
+      clearConfirmTimer = 0;
+      $('clearBtn').dataset.confirm = 'false';
+      $('clearBtn').textContent = '清空记录';
+    }
+
+    async function toggleRecording() {
+      if (recording) {
+        recording = false;
+        await writeQueue;
+        updateRecordControls();
+        return;
+      }
+      try {
+        resetClearConfirmation();
+        await openDatabase();
+        storedCount = await countStored();
+        if (storedCount + pendingWriteCount >= MAX_RECORDED_SAMPLES) {
+          pauseRecordingAtLimit();
+          return;
+        }
+        recording = true;
+        hasRecorded = true;
+        $('recordNote').className = 'note';
+        $('recordNote').innerHTML = '<strong>正在记录：</strong>样本按秒写入本机浏览器数据库，内存中的曲线仍只保留最近 180 点；T384 设备端保持零历史写入。';
+        updateRecordControls();
+      } catch (error) {
+        showRecordError(error);
+      }
+    }
+
+    async function exportCsv() {
+      if (!storedCount) return;
+      $('exportBtn').disabled = true;
+      try {
+        await writeQueue;
+        const parts = await readCsvParts();
+        const blob = new Blob(parts, { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 't384-fps-' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      } catch (error) {
+        showRecordError(error);
+      } finally {
+        $('exportBtn').disabled = storedCount === 0;
+      }
+    }
+
+    async function clearRecording() {
+      if (recording) return;
+      try {
+        await writeQueue;
+        await clearStored();
+        storedCount = 0;
+        hasRecorded = false;
+        resetClearConfirmation();
+        $('storedCount').textContent = '0';
+        $('recordNote').className = 'note';
+        $('recordNote').innerHTML = '<strong>记录边界：</strong>本机记录已清空。进入页面不会自动记录；只有点击“开始记录”才会再次写入本机浏览器数据库。';
+        updateRecordControls();
+      } catch (error) {
+        showRecordError(error);
+      }
+    }
+
+    function requestClearRecording() {
+      if (recording || storedCount === 0) return;
+      if ($('clearBtn').dataset.confirm === 'true') {
+        clearRecording();
+        return;
+      }
+      $('clearBtn').dataset.confirm = 'true';
+      $('clearBtn').textContent = '再次点击确认清空';
+      clearConfirmTimer = setTimeout(resetClearConfirmation, 5000);
+    }
+
+    function renderChart() {
+      const canvas = $('chart');
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width) return;
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      const width = Math.max(300, Math.round(rect.width * dpr));
+      const height = Math.max(160, Math.round(rect.height * dpr));
+      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      const ctx = canvas.getContext('2d');
+      const sx = width / 900;
+      const sy = height / 214;
+      ctx.setTransform(sx, 0, 0, sy, 0, 0);
+      ctx.clearRect(0, 0, 900, 214);
+      ctx.strokeStyle = '#e2e5e9';
+      ctx.lineWidth = 1;
+      for (let y = 28; y <= 184; y += 39) { ctx.beginPath(); ctx.moveTo(48, y); ctx.lineTo(884, y); ctx.stroke(); }
+      for (let x = 48; x <= 884; x += 167) { ctx.beginPath(); ctx.moveTo(x, 24); ctx.lineTo(x, 188); ctx.stroke(); }
+      ctx.fillStyle = '#697382';
+      ctx.font = '10px ' + getComputedStyle(document.documentElement).getPropertyValue('--mono');
+      ctx.fillText('FPS', 14, 16);
+      ctx.fillText('0', 27, 188);
+      ctx.fillText('35', 20, 31);
+      ctx.fillText('now', 856, 205);
+      [['source', '#202124'], ['stream', '#8b93a1']].forEach(([key, color]) => {
+        ctx.beginPath();
+        samples.forEach((sample, index) => {
+          const x = 48 + index * (836 / Math.max(1, CHART_LIMIT - 1));
+          const y = 188 - Math.max(0, Math.min(1, sample[key] / 35)) * 160;
+          index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        });
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+      $('windowCount').textContent = samples.length + ' 个实时点';
+    }
+
+    function update(data) {
+      const source = fps(data, data['source.fps_x1000'] !== undefined ? 'source.fps_x1000' : 'camera.source_fps_x1000');
+      const streamRate = browserStreamFps;
+      const faults = data['source.dropped_frames'] !== undefined
+        ? num(data, 'source.dropped_frames') + num(data, 'source.schedule_overruns') + num(data, 'pipeline.protocol_errors')
+        : num(data, 'camera.bad_frames') + num(data, 'camera.overflows') + num(data, 'camera.timeouts') + num(data, 'camera.dropped_no_slot');
+      const now = new Date();
+      const sample = { time: now.toISOString(), source, stream: streamRate, faults, txDrop: num(data, 'ncm.tx_drop') };
+
+      lastGood = Date.now();
+      failures = 0;
+      addChartSample(sample);
+      if (recording) queueRecordedSample(sample);
+
+      setMetric('sourceFps', source, 'FPS');
+      setMetric('streamFps', streamRate, 'FPS');
+      $('frameFps').textContent = streamRate.toFixed(1) + ' FPS';
+      $('publishedFrames').textContent = fmt(data['source.published_frames'] ?? data['camera.published_frames']);
+      $('captureErrors').textContent = fmt(faults);
+      $('txDrop').textContent = fmt(data['ncm.tx_drop']);
+      $('backpressure').textContent = fmt(data['stream.backpressure']);
+      $('writeErrors').textContent = fmt(data['stream.write_errors']);
+      $('frameBytes').textContent = fmt(data['camera.last_frame_bytes']);
+      $('sensor').textContent = data['source.kind'] || data['camera.sensor_pid'] || '--';
+      $('lastSample').textContent = now.toLocaleTimeString('zh-CN', { hour12: false });
+      $('streamLifecycle').textContent = fmt(data['stream.connects']) + ' / ' + fmt(data['stream.disconnects']);
+      $('cameraBuffer').textContent = fmt(data['pipeline.queued_chunks']) + ' / ' + fmt(data['pipeline.slot_count']) + ' · peak ' + fmt(data['pipeline.high_water_chunks']);
+      setPill($('ncmPill'), 'NCM 在线', 'ok');
+      setPill($('diagPill'), '诊断在线', 'ok');
+      setPill($('cameraPill'), num(data, 'camera.initialized') ? '采集适配器活跃' : '采集适配器未就绪', num(data, 'camera.initialized') ? 'ok' : 'warn');
+      $('diagMessage').textContent = '控制面在线，最近一次采样成功。';
+      $('diagRetryBtn').hidden = true;
+
+      renderChart();
+    }
+
+    async function poll() {
+      clearTimeout(pollTimer);
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1800);
+        const response = await fetch('/diag', { cache: 'no-store', signal: controller.signal });
+        clearTimeout(timeout);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        update(parseDiag(await response.text()));
+      } catch (error) {
+        failures += 1;
+        const disconnected = failures > 2;
+        setPill($('ncmPill'), disconnected ? '诊断已断开' : '诊断重试中', disconnected ? 'bad' : 'warn');
+        setPill($('diagPill'), disconnected ? '连接失败' : '正在重试', disconnected ? 'bad' : 'warn');
+        $('diagMessage').textContent = lastGood ? '上次成功在 ' + Math.round((Date.now() - lastGood) / 1000) + ' 秒前。' : '尚未连接到设备。';
+        $('diagRetryBtn').hidden = !disconnected;
+      } finally {
+        pollTimer = setTimeout(poll, document.hidden ? 5000 : 1000);
+      }
+    }
+
+    function renderRaw16Frame(frame) {
+      const canvas = $('stream');
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!rawImageData) {
+        rawImageData = context.createImageData(RAW16_WIDTH, RAW16_HEIGHT);
+      }
+      const pixels = new Uint32Array(rawImageData.data.buffer,
+        rawImageData.data.byteOffset, RAW16_WIDTH * RAW16_HEIGHT);
+      for (let pixel = 0; pixel < pixels.length; pixel += 1) {
+        pixels[pixel] = RAW16_PALETTE[frame[pixel * 2 + 1]];
+      }
+      context.putImageData(rawImageData, 0, 0);
+    }
+
+    function acceptRaw16Frame(frame, frameIndex) {
+      if (previousFrameIndex !== null) {
+        const delta = (frameIndex - previousFrameIndex) >>> 0;
+        if (delta > 1 && delta < 0x80000000) browserSequenceGaps += delta - 1;
+        else if (delta !== 1) browserSequenceErrors += 1;
+      }
+      previousFrameIndex = frameIndex;
+      const processStarted = performance.now();
+      renderRaw16Frame(frame);
+      browserProcessMs = performance.now() - processStarted;
+      const now = performance.now();
+      lastFrameAt = now;
+      browserFrameCount += 1;
+      if (!browserFpsWindowStart) browserFpsWindowStart = now;
+      const elapsed = now - browserFpsWindowStart;
+      if (elapsed >= 1000) {
+        browserStreamFps = browserFrameCount * 1000 / elapsed;
+        browserFrameCount = 0;
+        browserFpsWindowStart = now;
+      }
+      if (!streamLoaded) {
+        streamLoaded = true;
+        streamAttempt = 0;
+        $('streamPlaceholder').hidden = true;
+        setPill($('framePill'), '画面已连接', 'ok');
+      }
+      $('frameState').textContent = '完整分块帧 · 序号缺口 ' + fmt(browserSequenceGaps) +
+        ' · 序列异常 ' + fmt(browserSequenceErrors) + ' · 丢弃 ' +
+        fmt(browserDiscardedFrames) + ' · 处理 ' + browserProcessMs.toFixed(1) + ' ms';
+    }
+
+    function crc16Xmodem(data, length) {
+      let crc = 0;
+      for (let index = 0; index < length; index += 1) {
+        crc ^= data[index] << 8;
+        for (let bit = 0; bit < 8; bit += 1) {
+          crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+        }
+      }
+      return crc;
+    }
+
+    function decodeChunkHeader(header) {
+      const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+      if (view.getUint32(0, true) !== RAW16_WIRE_MAGIC ||
+          view.getUint16(4, true) !== RAW16_WIRE_VERSION ||
+          view.getUint16(6, true) !== RAW16_CHUNK_HEADER_BYTES ||
+          view.getUint32(16, true) !== RAW16_FRAME_BYTES ||
+          view.getUint16(26, true) !== RAW16_WIDTH ||
+          view.getUint16(28, true) !== RAW16_HEIGHT ||
+          view.getUint16(32, true) !== 1 ||
+          view.getUint16(34, true) !== crc16Xmodem(header, 34)) return null;
+      const payloadBytes = view.getUint16(24, true);
+      const frameOffset = view.getUint32(12, true);
+      if (!payloadBytes || payloadBytes > RAW16_CHUNK_PAYLOAD_MAX ||
+          frameOffset + payloadBytes > RAW16_FRAME_BYTES) return null;
+      return {
+        sequence: view.getUint32(8, true),
+        offset: frameOffset,
+        captureMs: view.getUint32(20, true),
+        payloadBytes,
+        flags: view.getUint16(30, true)
+      };
+    }
+
+    function recoverChunkHeader(header, state) {
+      const magic = [0x54, 0x33, 0x52, 0x31];
+      for (let start = 1; start <= header.length - magic.length; start += 1) {
+        if (magic.every((value, index) => header[start + index] === value)) {
+          header.copyWithin(0, start);
+          state.headerOffset = header.length - start;
+          return;
+        }
+      }
+      for (let keep = magic.length - 1; keep > 0; keep -= 1) {
+        let matches = true;
+        for (let index = 0; index < keep; index += 1) {
+          if (header[header.length - keep + index] !== magic[index]) matches = false;
+        }
+        if (matches) {
+          header.copyWithin(0, header.length - keep);
+          state.headerOffset = keep;
+          return;
+        }
+      }
+      state.headerOffset = 0;
+    }
+
+    function stopStream() {
+      clearTimeout(streamTimer);
+      streamTimer = 0;
+      clearInterval(streamWatchdogTimer);
+      streamWatchdogTimer = 0;
+      if (streamController) {
+        const controller = streamController;
+        streamController = null;
+        controller.abort();
+      }
+    }
+
+    async function connectRaw16Stream() {
+      const controller = new AbortController();
+      streamController = controller;
+      streamStartedAt = performance.now();
+      lastFrameAt = 0;
+      browserFrameCount = 0;
+      browserFpsWindowStart = 0;
+      browserStreamFps = 0;
+      previousFrameIndex = null;
+      browserSequenceGaps = 0;
+      browserSequenceErrors = 0;
+      browserDiscardedFrames = 0;
+      browserProcessMs = 0;
+      const frame = new Uint8Array(RAW16_FRAME_BYTES);
+      const header = new Uint8Array(RAW16_CHUNK_HEADER_BYTES);
+      const parser = {
+        headerOffset: 0,
+        chunk: null,
+        payloadOffset: 0,
+        assemblingSequence: null,
+        expectedOffset: 0,
+        frameValid: false,
+        chunkAccepted: false
+      };
+      try {
+        const response = await fetch('/raw16.stream?attempt=' + streamAttempt + '&t=' + Date.now(), {
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        if (response.headers.get('X-T384-Format') !== 'RAW16LE-CHUNK-V1' ||
+            Number(response.headers.get('X-T384-Wire-Version')) !== RAW16_WIRE_VERSION ||
+            Number(response.headers.get('X-T384-Chunk-Header-Bytes')) !== RAW16_CHUNK_HEADER_BYTES ||
+            Number(response.headers.get('X-T384-Chunk-Payload-Max')) !== RAW16_CHUNK_PAYLOAD_MAX ||
+            Number(response.headers.get('X-T384-Frame-Bytes')) !== RAW16_FRAME_BYTES) {
+          throw new Error('RAW16 流格式不匹配');
+        }
+        if (!response.body) throw new Error('浏览器不支持流式读取');
+        const reader = response.body.getReader();
+        while (true) {
+          const result = await reader.read();
+          if (result.done) throw new Error('RAW16 流已结束');
+          let inputOffset = 0;
+          while (inputOffset < result.value.length) {
+            if (!parser.chunk) {
+              const count = Math.min(RAW16_CHUNK_HEADER_BYTES - parser.headerOffset,
+                result.value.length - inputOffset);
+              header.set(result.value.subarray(inputOffset, inputOffset + count), parser.headerOffset);
+              parser.headerOffset += count;
+              inputOffset += count;
+              if (parser.headerOffset !== RAW16_CHUNK_HEADER_BYTES) continue;
+
+              parser.chunk = decodeChunkHeader(header);
+              if (!parser.chunk) {
+                recoverChunkHeader(header, parser);
+                continue;
+              }
+              parser.headerOffset = 0;
+              parser.payloadOffset = 0;
+
+              const startsFrame = (parser.chunk.flags & CHUNK_FLAG_FRAME_START) !== 0;
+              if (startsFrame) {
+                if (parser.assemblingSequence !== null &&
+                    (parser.expectedOffset !== RAW16_FRAME_BYTES || !parser.frameValid)) {
+                  browserDiscardedFrames += 1;
+                }
+                parser.assemblingSequence = parser.chunk.sequence;
+                parser.expectedOffset = 0;
+                parser.frameValid = true;
+              } else if (parser.assemblingSequence !== parser.chunk.sequence) {
+                parser.frameValid = false;
+              }
+              parser.chunkAccepted = parser.frameValid &&
+                parser.assemblingSequence === parser.chunk.sequence &&
+                parser.chunk.offset === parser.expectedOffset;
+              if (!parser.chunkAccepted) parser.frameValid = false;
+            }
+
+            const count = Math.min(parser.chunk.payloadBytes - parser.payloadOffset,
+              result.value.length - inputOffset);
+            if (parser.chunkAccepted) {
+              frame.set(result.value.subarray(inputOffset, inputOffset + count),
+                parser.chunk.offset + parser.payloadOffset);
+            }
+            parser.payloadOffset += count;
+            inputOffset += count;
+
+            if (parser.payloadOffset === parser.chunk.payloadBytes) {
+              if (parser.chunkAccepted) parser.expectedOffset += parser.chunk.payloadBytes;
+              const endsFrame = (parser.chunk.flags & CHUNK_FLAG_FRAME_END) !== 0;
+              if (endsFrame) {
+                if (parser.frameValid && parser.chunkAccepted &&
+                    parser.expectedOffset === RAW16_FRAME_BYTES) {
+                  acceptRaw16Frame(frame, parser.chunk.sequence);
+                } else {
+                  browserDiscardedFrames += 1;
+                }
+                parser.assemblingSequence = null;
+                parser.expectedOffset = 0;
+                parser.frameValid = false;
+              }
+              parser.chunk = null;
+              parser.payloadOffset = 0;
+              parser.chunkAccepted = false;
+            }
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (parser.assemblingSequence !== null) browserDiscardedFrames += 1;
+        if (streamController === controller) streamController = null;
+        streamLoaded = false;
+        const delay = Math.min(5000, 500 * Math.pow(2, Math.min(streamAttempt, 4)));
+        scheduleStreamRetry(delay, '画面连接失败，自动重试中');
+      } finally {
+        if (streamController === controller) streamController = null;
+      }
+    }
+
+    function scheduleStreamRetry(delay, message) {
+      if (document.hidden || streamTimer) return;
+      if (!streamWatchdogTimer) {
+        streamWatchdogTimer = setInterval(streamWatchdog, 1000);
+      }
+      if (streamController) {
+        const controller = streamController;
+        streamController = null;
+        controller.abort();
+      }
+      streamLoaded = false;
+      setPill($('framePill'), '正在重连', 'warn');
+      $('frameState').textContent = message;
+      $('streamPlaceholder').hidden = false;
+      streamTimer = setTimeout(() => {
+        streamTimer = 0;
+        streamAttempt += 1;
+        void connectRaw16Stream();
+      }, delay);
+    }
+
+    function streamWatchdog() {
+      if (document.hidden || !streamController || streamTimer) return;
+      const reference = lastFrameAt || streamStartedAt;
+      if (reference && performance.now() - reference > 5000) {
+        scheduleStreamRetry(500, '流超过 5 秒无新帧，正在重连');
+      }
+    }
+
+    function startStream() {
+      clearInterval(streamWatchdogTimer);
+      streamWatchdogTimer = setInterval(streamWatchdog, 1000);
+      scheduleStreamRetry(0, '正在建立实时流');
+    }
+
+    function activateTab(tab) {
+      const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+      tabs.forEach(item => {
+        const selected = item === tab;
+        item.setAttribute('aria-selected', selected ? 'true' : 'false');
+        item.tabIndex = selected ? 0 : -1;
+        $(item.getAttribute('aria-controls')).hidden = !selected;
+      });
+      if (tab.id === 'tab-trend') requestAnimationFrame(renderChart);
+    }
+
+    document.querySelectorAll('[role="tab"]').forEach((tab, index, tabs) => {
+      tab.addEventListener('click', () => activateTab(tab));
+      tab.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const direction = event.key === 'ArrowRight' ? 1 : -1;
+        const next = tabs[(index + direction + tabs.length) % tabs.length];
+        activateTab(next);
+        next.focus();
+      });
+    });
+
+    $('streamRetryBtn').addEventListener('click', () => {
+      stopStream();
+      streamAttempt = 0;
+      scheduleStreamRetry(0, '用户请求重新连接');
+    });
+    $('diagRetryBtn').addEventListener('click', () => { failures = 0; $('diagRetryBtn').hidden = true; poll(); });
+    $('recordBtn').addEventListener('click', toggleRecording);
+    $('exportBtn').addEventListener('click', exportCsv);
+    $('clearBtn').addEventListener('click', requestClearRecording);
+    addEventListener('resize', renderChart, { passive: true });
+    addEventListener('pagehide', () => { stopStream(); clearTimeout(pollTimer); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        stopStream();
+        streamLoaded = false;
+      } else {
+        poll();
+        if (!streamLoaded) scheduleStreamRetry(0, '页面恢复，正在重连画面');
+      }
+    });
+
+    updateRecordControls();
+    openDatabase().then(countStored).then(count => {
+      storedCount = count;
+      hasRecorded = count > 0;
+      $('storedCount').textContent = fmt(count);
+      updateRecordControls();
+    }).catch(error => {
+      void error;
+      $('storageTarget').textContent = '本机存储不可用';
+      $('recordBtn').disabled = true;
+      $('recordNote').className = 'note bad';
+      $('recordNote').innerHTML = '<strong>本机存储不可用：</strong>请检查浏览器隐私或存储权限。实时画面与指标不受影响，设备端不会记录。';
+    });
+    renderChart();
+    startStream();
+    poll();
+  })();
+  </script>
+</body>
+</html>

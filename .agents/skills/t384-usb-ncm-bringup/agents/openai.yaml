@@ -1,0 +1,4 @@
+interface:
+  display_name: "T384 USB NCM Bring-up"
+  short_description: "CH32H417 USBHS、APIPA与DHCP闭环排障"
+  default_prompt: "Use $t384-usb-ncm-bringup to continue T384 USB NCM bring-up from current logs, establish the flashed-version chain, and diagnose mounted=1/APIPA before changing DHCP behavior."

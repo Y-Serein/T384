@@ -1,0 +1,23 @@
+{
+  "skill_name": "t384-schematic-handoff-review",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "请审核最新 T384 原理图，重点确认 MINI2 UART1 是否真的接到了 CH32 PC11，并区分模块 UART1 和 MCU USART 编号。只读，不改文件。",
+      "expected_output": "应核对物理 pin、U8 A/B 侧和 CH32 数据手册，说明 PC11 是 USART3_RX；确认模块 UART1_TX 经转换后到 PC11、模块 UART1_RX 到 PC10，并避免把它判成 UART1 接线错误。",
+      "files": ["docs/SCH_CH32H417WEU6-R0_2026-08-26.pdf", "docs/design/图片和附件/MINI2 384 硬件接口资料-V1.0.xlsx"]
+    },
+    {
+      "id": 2,
+      "prompt": "请检查当前原理图的 R30 和 VIO18 配置，判断 DVP/I2C 默认 1.8V 是否成立，并指出旧版 100k 结论是否仍适用。",
+      "expected_output": "应以最新文件为准，确认 R30 已移除/不再构成 XO 100k 下拉，区分旧问题与当前状态，并说明最终仍需上板测量 VIO18。",
+      "files": ["docs/SCH_CH32H417WEU6-R0_2026-08-26.pdf", "docs/data/CH32H417EVT/PUB/WCH_CH32H417DS0_数据手册.PDF"]
+    },
+    {
+      "id": 3,
+      "prompt": "旧 HANDOFF 和最新原理图结论不一致时，请接手项目并生成 30 秒可恢复的交接状态，合理项在前、不合理项在后。",
+      "expected_output": "应记录最新 PDF 时间，标记旧 UART/SCL/R30/USB 极性问题已修正，保留当前 VSYS 压降、U2 标题和烧录/NCM验证缺口，并给出下一步和未验证项。",
+      "files": ["HANDOFF.md", "docs/runbooks/PROJECT_MEMORY.md", "docs/SCH_CH32H417WEU6-R0_2026-08-26.pdf"]
+    }
+  ]
+}

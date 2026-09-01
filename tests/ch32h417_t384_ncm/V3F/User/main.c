@@ -1,0 +1,60 @@
+#include "ch32h417.h"
+#include "ch32h417_swpmi.h"
+#include "debug.h"
+#include "system_ch32h417.h"
+#include "t384_camera.h"
+#include "t384_ncm.h"
+#include "t384_time.h"
+#include "tusb.h"
+
+int main(void)
+{
+    SystemInit();
+    SystemAndCoreClockUpdate();
+
+    /* Match the proven Petros_DVP V3F bring-up window and debug UART. */
+    Delay_Init();
+    USART_Printf_Init(115200u);
+    Delay_Ms(1000u);
+    printf("T384 NCM V3F boot, SystemClk:%lu CoreClk:%lu\r\n",
+           (unsigned long)SystemClock, (unsigned long)SystemCoreClock);
+    Delay_Ms(500u);
+
+    /* Match the USBHS pin-release sequence proven by Petros_DVP. */
+    RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB, ENABLE);
+    RCC_HB1PeriphClockCmd(RCC_HB1Periph_SWPMI, ENABLE);
+    SWPMI_BypassCmd(ENABLE);
+    GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
+
+    t384_ncm_prepare_identity();
+
+    /* WCH's SCCB delays temporarily take over SysTick0; start the 1 ms clock
+     * only after all blocking OV2640 register programming has completed. */
+    const bool camera_ready = t384_camera_init();
+    t384_time_init();
+    printf(camera_ready ? "OV2640 JPEG validation capture ready\r\n"
+                        : "OV2640 init failed; NCM/HTTP will remain available\r\n");
+
+    const tusb_rhport_init_t usb_init = {
+        .role = TUSB_ROLE_DEVICE,
+        .speed = TUSB_SPEED_AUTO,
+    };
+    if (!tusb_init(BOARD_TUD_RHPORT, &usb_init)) {
+        printf("USBHS/TinyUSB init failed\r\n");
+        while (1) {
+        }
+    }
+    printf("USBHS/TinyUSB init passed\r\n");
+
+    const bool network_ready = t384_ncm_init();
+    printf(network_ready ? "NCM/lwIP init passed\r\n"
+                         : "NCM/lwIP init failed; USB kept active\r\n");
+
+    while (1) {
+        tud_task();
+        t384_camera_task();
+        if (network_ready) {
+            t384_ncm_task();
+        }
+    }
+}

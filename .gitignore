@@ -1,0 +1,14 @@
+# MounRiver Studio local workspace state and generated build outputs.
+# Project metadata is portable; these caches embed machine-local absolute paths.
+firmware/.mrs/
+firmware/**/.mrs/
+firmware/V3F/obj/
+firmware/**/obj/
+tests/.mrs/
+tests/**/.mrs/
+tests/**/V3F/obj/
+tests/**/obj/
+**/__pycache__/
+*.py[cod]
+tools/windows_user_action.ps1
+tools/wsl_user_action.sh
