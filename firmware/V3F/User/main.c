@@ -23,7 +23,7 @@ int main(void)
     Delay_Init();
     USART_Printf_Init(115200u);
     Delay_Ms(1000u);
-    printf("T384 RAW16 pipeline V3F boot, SystemClk:%lu CoreClk:%lu\r\n",
+    printf("T384 product firmware V3F boot, SystemClk:%lu CoreClk:%lu\r\n",
            (unsigned long)SystemClock, (unsigned long)SystemCoreClock);
     Delay_Ms(500u);
 
@@ -42,8 +42,12 @@ int main(void)
         while (1) {
         }
     }
-    printf("RAW16 source=%s, 384x288, 221184 bytes/frame\r\n",
-           t384_frame_source_name());
+    printf("RAW16 source=%s, %ux%u, %lu bytes/frame\r\n",
+           t384_frame_source_name(), T384_RAW16_WIDTH, T384_RAW16_HEIGHT,
+           (unsigned long)T384_RAW16_FRAME_BYTES);
+    if (!t384_frame_source_stream_ready()) {
+        printf("MINI2 DVP diagnostic mode; RAW16 stream is gated\r\n");
+    }
 
     const tusb_rhport_init_t usb_init = {
         .role = TUSB_ROLE_DEVICE,

@@ -11,9 +11,12 @@ if [[ -e "$project_root/designs" ]]; then
 fi
 descriptor_output="/tmp/t384_raw16_descriptor_smoke"
 pattern_output="/tmp/t384_raw16_pattern_smoke"
+product_pattern_output="/tmp/t384_raw16_product_pattern_smoke"
 pipeline_output="/tmp/t384_raw16_pipeline_smoke"
+product_pipeline_output="/tmp/t384_raw16_product_pipeline_smoke"
 source_output="/tmp/t384_raw16_source_sim_smoke"
 checksum_copy_output="/tmp/t384_lwip_checksum_copy_smoke"
+mini2_protocol_output="/tmp/t384_mini2_uart_protocol_smoke"
 console_javascript="/tmp/t384_raw16_console.js"
 
 includes=(
@@ -190,6 +193,8 @@ gcc "${common_flags[@]}" -fsyntax-only \
   "$firmware_root/Common/App/t384_time.c" \
   "$firmware_root/Common/Raw16/t384_raw16.c" \
   "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c" \
+  "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
   "$firmware_root/Common/Raw16/t384_frame_source_sim.c" \
   "$firmware_root/Common/Raw16/t384_raw16_wire.c" \
   "$firmware_root/V3F/User/main.c" \
@@ -209,14 +214,24 @@ gcc "${common_flags[@]}" \
   -o "$descriptor_output"
 "$descriptor_output"
 
-gcc -std=gnu99 -Wall -Wextra -Werror \
+gcc -std=gnu99 -DT384_RAW16_PROFILE=384u \
+  -Wall -Wextra -Werror \
   -I"$firmware_root/Common/Raw16" \
   "$project_root/tests/raw16_pattern_smoke.c" \
   "$firmware_root/Common/Raw16/t384_raw16.c" \
   -o "$pattern_output"
 "$pattern_output"
 
-gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK -Wall -Wextra -Werror \
+gcc -std=gnu99 -Wall -Wextra -Werror \
+  -I"$firmware_root/Common/Raw16" \
+  "$project_root/tests/raw16_pattern_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_raw16.c" \
+  -o "$product_pattern_output"
+"$product_pattern_output"
+
+gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK \
+  -DT384_RAW16_PROFILE=384u \
+  -Wall -Wextra -Werror \
   -I"$firmware_root/Common/App" \
   -I"$firmware_root/Common/Raw16" \
   "$project_root/tests/raw16_pipeline_smoke.c" \
@@ -229,12 +244,31 @@ gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK -Wall -Wextra -Werror \
 gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK -Wall -Wextra -Werror \
   -I"$firmware_root/Common/App" \
   -I"$firmware_root/Common/Raw16" \
+  "$project_root/tests/raw16_pipeline_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_raw16.c" \
+  "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
+  "$firmware_root/Common/Raw16/t384_raw16_wire.c" \
+  -o "$product_pipeline_output"
+"$product_pipeline_output"
+
+gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK \
+  -DT384_RAW16_PROFILE=384u \
+  -DT384_FRAME_SOURCE_SIMULATOR=1 -Wall -Wextra -Werror \
+  -I"$firmware_root/Common/App" \
+  -I"$firmware_root/Common/Raw16" \
   "$project_root/tests/raw16_source_sim_smoke.c" \
   "$firmware_root/Common/Raw16/t384_raw16.c" \
   "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
   "$firmware_root/Common/Raw16/t384_frame_source_sim.c" \
   -o "$source_output"
 "$source_output"
+
+gcc -std=gnu99 -Wall -Wextra -Werror \
+  -I"$firmware_root/Common/Raw16" \
+  "$project_root/tests/mini2_uart_protocol_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
+  -o "$mini2_protocol_output"
+"$mini2_protocol_output"
 
 gcc "${common_flags[@]}" -ffunction-sections -fdata-sections \
   "$project_root/tests/lwip_checksum_copy_smoke.c" \
@@ -272,7 +306,7 @@ if rg --hidden -a -q 'obj/T384-NCM_V3F\.(hex|elf)' \
   echo "stale T384-NCM download target in RAW16 bench metadata" >&2
   exit 1
 fi
-rg -Fq '#if T384_RAW16_FRAME_BYTES != 221184u' \
+rg -Fq '#if T384_RAW16_FRAME_BYTES != 98304u && T384_RAW16_FRAME_BYTES != 221184u' \
   "$firmware_root/Common/Raw16/t384_raw16.c"
 rg -Fq 'X-T384-Format: RAW16LE-CHUNK-V1' \
   "$firmware_root/Common/App/http_status.c"
@@ -301,8 +335,24 @@ rg -Fq 'tud_network_xmit_flush();' \
 rg -Fq '#define T384_NCM_RX_BUDGET 8u' \
   "$firmware_root/Common/App/t384_ncm.c"
 rg -Fq 'queue_static_chunk' "$firmware_root/Common/App/http_status.c"
-rg -Fq '#define T384_FRAME_SOURCE_DMA_EQUIV 1' \
+rg -Fq '#define T384_FRAME_SOURCE_SIMULATOR 0' \
   "$firmware_root/Common/Raw16/t384_frame_source.h"
+rg -Fq 'mini2-dvp-raw16-v1' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 't384_frame_source_stream_ready' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 't384_mini2_build_dvp30_command' \
+  "$firmware_root/Common/Raw16/t384_mini2_protocol.c"
+rg -Fq 'mini2_control_dvp30_status' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_uart0_query(0x84u' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_uart0_query(0x86u' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_uart0_query_info(0x01u' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_uart0_query_info(0x02u' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
 rg -Fq 'DMA_M2M_Enable' \
   "$firmware_root/Common/Raw16/t384_frame_source_sim.c"
 rg -Fq 'dma-equivalent-dvp-source-v1' \
@@ -348,6 +398,7 @@ if [[ -f "$map_file" ]]; then
       "$firmware_root/V3F/.template" \
       "$firmware_root/V3F/User/main.c" \
       "$firmware_root/Common/App/http_status.c" \
+      "$firmware_root/Common/App/t384_product_config.h" \
       "$firmware_root/Common/App/lwipopts.h" \
       "$firmware_root/Common/App/arch/cc.h" \
       "$firmware_root/Common/App/tusb_config.h" \
@@ -355,7 +406,12 @@ if [[ -f "$map_file" ]]; then
       "$firmware_root/Common/App/t384_ncm.c" \
       "$firmware_root/Common/USB/dcd_ch32h417_usbhs.c" \
       "$firmware_root/Common/Raw16/t384_raw16.c" \
+      "$firmware_root/Common/Raw16/t384_raw16.h" \
       "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
+      "$firmware_root/Common/Raw16/t384_frame_pipeline.h" \
+      "$firmware_root/Common/Raw16/t384_frame_source_mini2.c" \
+      "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
+      "$firmware_root/Common/Raw16/t384_mini2_protocol.h" \
       "$firmware_root/Common/Raw16/t384_frame_source_sim.c" \
       "$firmware_root/Common/Raw16/t384_raw16_wire.c" \
       "$firmware_root/ThirdParty/TinyUSB/src/class/net/net_device.h" \
@@ -370,18 +426,19 @@ import re
 import sys
 
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+expected_slot_data = 0x18000
 ncm = re.search(r"\.bss\.ncm_epbuf\s*\n\s*0x[0-9a-f]+\s+0x([0-9a-f]+)", text, re.I)
 if not ncm or int(ncm.group(1), 16) != 0xD010:
     actual = ncm.group(1) if ncm else "missing"
     raise SystemExit(f"unexpected ncm_epbuf size 0x{actual}; expected 0xD010 for 16KiB x 3 + 4KiB")
 payload = re.search(r"\.bss\.slot_data\s+0x[0-9a-f]+\s+0x([0-9a-f]+)", text, re.I)
-if not payload or int(payload.group(1), 16) != 0x12000:
+if not payload or int(payload.group(1), 16) != expected_slot_data:
     actual = payload.group(1) if payload else "missing"
-    raise SystemExit(f"unexpected RAW16 slot_data size 0x{actual}; expected 0x12000")
+    raise SystemExit(f"unexpected RAW16 slot_data size 0x{actual}; expected 0x{expected_slot_data:X}")
 metadata = re.search(r"\.bss\.slots\s+0x[0-9a-f]+\s+0x([0-9a-f]+)", text, re.I)
-if not metadata or int(metadata.group(1), 16) != 0xC0:
+if not metadata or int(metadata.group(1), 16) != 0x180:
     actual = metadata.group(1) if metadata else "missing"
-    raise SystemExit(f"unexpected RAW16 slot metadata size 0x{actual}; expected 0xC0")
+    raise SystemExit(f"unexpected RAW16 slot metadata size 0x{actual}; expected 0x180")
 ebss = re.search(r"0x([0-9a-f]+)\s+PROVIDE \(_ebss = \.\)", text, re.I)
 if not ebss:
     raise SystemExit("missing _ebss in RAW16 bench map")
@@ -389,7 +446,7 @@ stack_origin = 0x2017F800
 margin = stack_origin - int(ebss.group(1), 16)
 if margin < 0x8000:
     raise SystemExit(f"RAW16 pipeline RAM margin before stack is only 0x{margin:X}; need at least 32KiB")
-print(f"RAW16 bench map config passed: ncm_epbuf=0xD010, slot_data=0x12000, metadata=0xC0, pre-stack margin=0x{margin:X}")
+print(f"RAW16 bench map config passed: ncm_epbuf=0xD010, slot_data=0x{expected_slot_data:X}, metadata=0x180, pre-stack margin=0x{margin:X}")
 PY
 fi
 

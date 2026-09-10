@@ -9,7 +9,11 @@
 #define T384_PIPELINE_CHUNK_ROWS 8u
 #define T384_PIPELINE_CHUNK_BYTES \
     (T384_RAW16_WIDTH * T384_RAW16_BYTES_PER_PIXEL * T384_PIPELINE_CHUNK_ROWS)
+#if T384_RAW16_FRAME_BYTES == 98304u
+#define T384_PIPELINE_SLOT_COUNT 24u
+#else
 #define T384_PIPELINE_SLOT_COUNT 12u
+#endif
 
 #define T384_CHUNK_FLAG_FRAME_START 0x0001u
 #define T384_CHUNK_FLAG_FRAME_END 0x0002u
@@ -41,6 +45,7 @@ typedef struct {
 } t384_frame_pipeline_stats_t;
 
 void t384_frame_pipeline_init(void);
+bool t384_frame_pipeline_empty(void);
 /*
  * Single-producer/single-consumer contract:
  * - all producer calls must be serialized by the source adapter;

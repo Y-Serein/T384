@@ -22,7 +22,8 @@
 #define HTTP_IDLE_POLL_LIMIT 5u
 #define HTTP_RAW16_WRITE_BUDGET 16u
 #define HTTP_RAW16_STALL_TIMEOUT_MS 10000u
-#define HTTP_RAW16_TARGET_BPS 7000000u
+#define HTTP_RAW16_TARGET_BPS 4915200u
+#define HTTP_IDLE_PIPELINE_DRAIN_BUDGET 32u
 
 typedef struct {
     struct tcp_pcb *pcb;
@@ -67,7 +68,7 @@ static uint32_t raw16_rate_started_ms;
 static uint32_t raw16_rate_frames;
 static uint32_t raw16_rate_bytes;
 static uint32_t http_accept_rejects;
-static char diag_response[4096];
+static char diag_response[5120];
 
 static const char status_response[] =
 #include "device_console_html.inc"
@@ -83,6 +84,13 @@ static const char busy_response[] =
     "Content-Type: text/plain; charset=utf-8\r\n"
     "Retry-After: 1\r\n"
     "Connection: close\r\n\r\nonly one RAW16 stream is supported\n";
+
+static const char source_not_ready_response[] =
+    "HTTP/1.0 503 Service Unavailable\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "Retry-After: 1\r\n"
+    "Connection: close\r\n\r\n"
+    "MINI2 DVP timing is not validated; inspect /diag\n";
 
 static unsigned active_client_count(void)
 {
@@ -124,8 +132,11 @@ static size_t build_diag_response(void)
     t384_frame_source_get_stats(&source);
     t384_frame_pipeline_get_stats(&pipeline);
     format_u64_decimal(raw16_stats.bytes, raw16_bytes);
-    format_u64_decimal((uint64_t)source.frames * T384_RAW16_FRAME_BYTES,
-                       source_bytes);
+    const uint64_t observed_source_bytes = source.dvp_observed_bytes != 0u
+                                               ? source.dvp_observed_bytes
+                                               : (uint64_t)source.frames *
+                                                     T384_RAW16_FRAME_BYTES;
+    format_u64_decimal(observed_source_bytes, source_bytes);
     format_u64_decimal(pipeline.bytes_committed, pipeline_bytes);
 
     const unsigned stream_active = raw16_client != NULL ? 1u : 0u;
@@ -142,7 +153,51 @@ static size_t build_diag_response(void)
         "source.dropped_frames=%lu\n"
         "source.schedule_overruns=%lu\n"
         "source.fps_x1000=%lu\n"
+        "source.stream_ready=%lu\n"
         "source.bytes=%s\n"
+        "mini2.control_attempts=%lu\n"
+        "mini2.control_tx_bytes=%lu\n"
+        "mini2.control_ack_valid=%lu\n"
+        "mini2.control_ack_status=%lu\n"
+        "mini2.control_ack_timeout=%lu\n"
+        "mini2.control_ack_bad=%lu\n"
+        "mini2.control_digital_off_status=%lu\n"
+        "mini2.control_analog_off_status=%lu\n"
+        "mini2.control_detector30_status=%lu\n"
+        "mini2.control_dvp30_status=%lu\n"
+        "mini2.query_detector_valid=%lu\n"
+        "mini2.query_detector_status=%lu\n"
+        "mini2.query_detector_fps=%lu\n"
+        "mini2.query_digital_valid=%lu\n"
+        "mini2.query_digital_status=%lu\n"
+        "mini2.query_digital_enabled=%lu\n"
+        "mini2.query_digital_format=%lu\n"
+        "mini2.query_digital_fps=%lu\n"
+        "mini2.device_name_valid=%lu\n"
+        "mini2.device_name=%s\n"
+        "mini2.firmware_version_valid=%lu\n"
+        "mini2.firmware_version=%s\n"
+        "dvp.timing_validated=%u\n"
+        "dvp.config_pclk_falling=%u\n"
+        "dvp.config_hsync_low=%u\n"
+        "dvp.config_vsync_high=%u\n"
+        "dvp.expected_row_bytes=%u\n"
+        "dvp.expected_rows=%u\n"
+        "dvp.expected_width=%u\n"
+        "dvp.expected_height=%u\n"
+        "dvp.expected_fps=%u\n"
+        "dvp.frame_starts=%lu\n"
+        "dvp.row_events=%lu\n"
+        "dvp.frame_done_irqs=%lu\n"
+        "dvp.stop_frame_irqs=%lu\n"
+        "dvp.frame_ends=%lu\n"
+        "dvp.fifo_overflows=%lu\n"
+        "dvp.orphan_rows=%lu\n"
+        "dvp.bad_frames=%lu\n"
+        "dvp.last_frame_rows=%lu\n"
+        "dvp.last_frame_bytes=%lu\n"
+        "dvp.observed_bytes=%s\n"
+        "dvp.capture_active=%lu\n"
         "pipeline.chunk_rows=%u\n"
         "pipeline.chunk_bytes=%u\n"
         "pipeline.slot_count=%u\n"
@@ -198,13 +253,13 @@ static size_t build_diag_response(void)
         "camera.starts=%lu\n"
         "camera.frame_starts=%lu\n"
         "camera.row_chunks=%lu\n"
-        "camera.frame_done_irqs=0\n"
-        "camera.stop_frame_irqs=0\n"
+        "camera.frame_done_irqs=%lu\n"
+        "camera.stop_frame_irqs=%lu\n"
         "camera.frame_ends=%lu\n"
-        "camera.fifo_overflows=0\n"
+        "camera.fifo_overflows=%lu\n"
         "camera.frames=%lu\n"
         "camera.published_frames=%lu\n"
-        "camera.bad_frames=0\n"
+        "camera.bad_frames=%lu\n"
         "camera.overflows=%lu\n"
         "camera.timeouts=%lu\n"
         "camera.dropped_ready=0\n"
@@ -251,7 +306,51 @@ static size_t build_diag_response(void)
         (unsigned long)source.dropped_frames,
         (unsigned long)source.schedule_overruns,
         (unsigned long)source.source_fps_x1000,
+        (unsigned long)source.stream_ready,
         source_bytes,
+        (unsigned long)source.mini2_control_attempts,
+        (unsigned long)source.mini2_control_tx_bytes,
+        (unsigned long)source.mini2_control_ack_valid,
+        (unsigned long)source.mini2_control_ack_status,
+        (unsigned long)source.mini2_control_ack_timeout,
+        (unsigned long)source.mini2_control_ack_bad,
+        (unsigned long)source.mini2_control_digital_off_status,
+        (unsigned long)source.mini2_control_analog_off_status,
+        (unsigned long)source.mini2_control_detector30_status,
+        (unsigned long)source.mini2_control_dvp30_status,
+        (unsigned long)source.mini2_query_detector_valid,
+        (unsigned long)source.mini2_query_detector_status,
+        (unsigned long)source.mini2_query_detector_fps,
+        (unsigned long)source.mini2_query_digital_valid,
+        (unsigned long)source.mini2_query_digital_status,
+        (unsigned long)source.mini2_query_digital_enabled,
+        (unsigned long)source.mini2_query_digital_format,
+        (unsigned long)source.mini2_query_digital_fps,
+        (unsigned long)source.mini2_device_name_valid,
+        source.mini2_device_name,
+        (unsigned long)source.mini2_firmware_version_valid,
+        source.mini2_firmware_version,
+        T384_MINI2_DVP_TIMING_VALIDATED,
+        T384_MINI2_DVP_PCLK_FALLING,
+        T384_MINI2_DVP_HSYNC_LOW,
+        T384_MINI2_DVP_VSYNC_HIGH,
+        T384_MINI2_DVP_ROW_BYTES,
+        T384_MINI2_DVP_EXPECTED_ROWS,
+        T384_MINI2_DVP_WIDTH,
+        T384_MINI2_DVP_HEIGHT,
+        T384_MINI2_DVP_FPS,
+        (unsigned long)source.dvp_frame_starts,
+        (unsigned long)source.dvp_row_events,
+        (unsigned long)source.dvp_frame_done_irqs,
+        (unsigned long)source.dvp_stop_frame_irqs,
+        (unsigned long)source.dvp_frame_ends,
+        (unsigned long)source.dvp_fifo_overflows,
+        (unsigned long)source.dvp_orphan_rows,
+        (unsigned long)source.dvp_bad_frames,
+        (unsigned long)source.dvp_last_frame_rows,
+        (unsigned long)source.dvp_last_frame_bytes,
+        source_bytes,
+        (unsigned long)source.capture_active,
         T384_PIPELINE_CHUNK_ROWS,
         T384_PIPELINE_CHUNK_BYTES,
         T384_PIPELINE_SLOT_COUNT,
@@ -300,22 +399,26 @@ static size_t build_diag_response(void)
         (unsigned long)source.initialized,
         (unsigned long)source.initialized,
         (unsigned long)(source.initialized == 0u ? 1u : 0u),
-        (unsigned long)source.frames,
-        (unsigned long)source.frames,
-        (unsigned long)source.frames,
-        (unsigned long)pipeline.chunks_committed,
-        (unsigned long)source.frames,
+        (unsigned long)source.dvp_frame_starts,
+        (unsigned long)source.dvp_frame_starts,
+        (unsigned long)source.dvp_frame_starts,
+        (unsigned long)source.dvp_row_events,
+        (unsigned long)source.dvp_frame_done_irqs,
+        (unsigned long)source.dvp_stop_frame_irqs,
+        (unsigned long)source.dvp_frame_ends,
+        (unsigned long)source.dvp_fifo_overflows,
         (unsigned long)source.frames,
         (unsigned long)source.published_frames,
-        (unsigned long)pipeline.acquire_no_slot,
-        (unsigned long)source.schedule_overruns,
+        (unsigned long)source.dvp_bad_frames,
+        (unsigned long)source.dvp_fifo_overflows,
+        (unsigned long)0u,
         (unsigned long)source.dropped_frames,
         source_bytes,
-        (unsigned long)T384_RAW16_FRAME_BYTES,
-        (unsigned long)T384_RAW16_FRAME_BYTES,
+        (unsigned long)source.dvp_last_frame_bytes,
+        (unsigned long)source.dvp_last_frame_bytes,
         (unsigned long)source.source_fps_x1000,
-        (unsigned long)pipeline.producer_active,
-        (unsigned long)(pipeline.queued_chunks != 0u ? 1u : 0u),
+        (unsigned long)source.capture_active,
+        (unsigned long)source.stream_ready,
         (unsigned long)pipeline.consumer_leased,
         stream_active,
         (unsigned long)raw16_stats.connects,
@@ -674,6 +777,10 @@ static err_t http_poll(void *arg, struct tcp_pcb *pcb)
 
 static err_t send_raw16_stream(http_client_t *client)
 {
+    if (!t384_frame_source_stream_ready()) {
+        return send_and_close(client, source_not_ready_response,
+                              sizeof(source_not_ready_response) - 1u);
+    }
     if (raw16_client != NULL) {
         return send_and_close(client, busy_response,
                               sizeof(busy_response) - 1u);
@@ -845,6 +952,17 @@ void t384_http_status_task(void)
     }
 
     http_client_t *client = raw16_client;
+    if (client == NULL) {
+        for (unsigned drained = 0u;
+             drained < HTTP_IDLE_PIPELINE_DRAIN_BUDGET; ++drained) {
+            t384_frame_chunk_view_t chunk;
+            if (!t384_frame_pipeline_peek(&chunk)) {
+                break;
+            }
+            t384_frame_pipeline_release();
+        }
+        return;
+    }
     if (client == NULL || client->pcb == NULL || client->closing) {
         return;
     }

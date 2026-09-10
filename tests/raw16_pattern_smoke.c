@@ -13,9 +13,8 @@ int main(void)
     size_t offset = 0u;
     size_t chunk_index = 0u;
 
-    assert(T384_RAW16_WIDTH == 384u);
-    assert(T384_RAW16_HEIGHT == 288u);
-    assert(T384_RAW16_FRAME_BYTES == 221184u);
+    assert(T384_RAW16_FRAME_BYTES ==
+           T384_RAW16_WIDTH * T384_RAW16_HEIGHT * 2u);
     assert(t384_raw16_word(frame_index, 0u) == 0x0348u);
     assert(t384_raw16_word(frame_index, 1u) == 0x0449u);
     assert(t384_raw16_word(frame_index, 7u) ==

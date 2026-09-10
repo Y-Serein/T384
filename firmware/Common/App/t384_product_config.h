@@ -1,6 +1,8 @@
 #ifndef T384_PRODUCT_CONFIG_H
 #define T384_PRODUCT_CONFIG_H
 
+#include "t384_raw16.h"
+
 /*
  * Development USB identity.
  *
@@ -27,5 +29,24 @@
 #define T384_NCM_CLIENT_COUNT 3u
 
 #define T384_HTTP_PORT 80u
+
+/*
+ * MINI2 DVP bring-up hypothesis.  The interface documents do not freeze the
+ * sampling edge or sync polarity, so these values are deliberately exposed
+ * in /diag and remain unvalidated until checked on the final board.
+ */
+#define T384_MINI2_DVP_WIDTH T384_RAW16_WIDTH
+#define T384_MINI2_DVP_HEIGHT T384_RAW16_HEIGHT
+#define T384_MINI2_DVP_ROW_BYTES (T384_MINI2_DVP_WIDTH * 2u)
+#define T384_MINI2_DVP_EXPECTED_ROWS T384_MINI2_DVP_HEIGHT
+#if T384_RAW16_PROFILE == 256u
+#define T384_MINI2_DVP_FPS 50u
+#else
+#define T384_MINI2_DVP_FPS 30u
+#endif
+#define T384_MINI2_DVP_PCLK_FALLING 0u
+#define T384_MINI2_DVP_HSYNC_LOW 0u
+#define T384_MINI2_DVP_VSYNC_HIGH 1u
+#define T384_MINI2_DVP_TIMING_VALIDATED 0u
 
 #endif

@@ -5,8 +5,8 @@
 
 #include "t384_compiler.h"
 
-#if T384_PIPELINE_CHUNK_BYTES != 6144u
-#error "unexpected T384 pipeline chunk size"
+#if T384_PIPELINE_CHUNK_BYTES != 4096u && T384_PIPELINE_CHUNK_BYTES != 6144u
+#error "unsupported T384 pipeline chunk size"
 #endif
 
 typedef struct {
@@ -93,6 +93,11 @@ void t384_frame_pipeline_init(void)
     producer_frame_offset = 0u;
     producer_next_slot = 0u;
     consumer_next_slot = 0u;
+}
+
+bool t384_frame_pipeline_empty(void)
+{
+    return queued_count() == 0u && !producer_active && !producer_leased;
 }
 
 bool t384_frame_pipeline_begin_frame(uint32_t frame_sequence,

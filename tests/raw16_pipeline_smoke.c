@@ -73,16 +73,26 @@ int main(void)
     assert(stats.frames_started == 1u);
     assert(stats.frames_completed == 1u);
     assert(stats.frames_aborted == 0u);
-    assert(stats.chunks_committed == 36u);
+    const uint32_t chunks_per_frame =
+        T384_RAW16_FRAME_BYTES / T384_PIPELINE_CHUNK_BYTES;
+    assert(stats.chunks_committed == chunks_per_frame);
     assert(stats.bytes_committed == T384_RAW16_FRAME_BYTES);
-    assert(stats.chunks_released == 36u);
+    assert(stats.chunks_released == chunks_per_frame);
     assert(stats.queued_chunks == 0u);
     assert(stats.high_water_chunks == 1u);
 
     t384_frame_pipeline_init();
     assert(t384_frame_pipeline_begin_frame(1u, 0u, 0u));
+    const bool ring_holds_complete_frame =
+        (uint64_t)T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_CHUNK_BYTES ==
+        T384_RAW16_FRAME_BYTES;
     for (unsigned i = 0u; i < T384_PIPELINE_SLOT_COUNT; ++i) {
-        produce_chunk(1u, i * T384_PIPELINE_CHUNK_BYTES, false);
+        const bool end = ring_holds_complete_frame &&
+                         i + 1u == T384_PIPELINE_SLOT_COUNT;
+        produce_chunk(1u, i * T384_PIPELINE_CHUNK_BYTES, end);
+    }
+    if (ring_holds_complete_frame) {
+        assert(t384_frame_pipeline_begin_frame(2u, 0u, 0u));
     }
     uint8_t *data = NULL;
     uint16_t capacity = 0u;

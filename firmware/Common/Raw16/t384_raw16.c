@@ -1,7 +1,7 @@
 #include "t384_raw16.h"
 
-#if T384_RAW16_FRAME_BYTES != 221184u
-#error "unexpected T384 RAW16 frame size"
+#if T384_RAW16_FRAME_BYTES != 98304u && T384_RAW16_FRAME_BYTES != 221184u
+#error "unsupported T384 RAW16 frame size"
 #endif
 
 uint16_t t384_raw16_word(uint32_t frame_index, uint32_t word_index)

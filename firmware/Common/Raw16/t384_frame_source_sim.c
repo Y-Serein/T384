@@ -1,5 +1,7 @@
 #include "t384_frame_source.h"
 
+#if T384_FRAME_SOURCE_SIMULATOR
+
 #include <stddef.h>
 #include <string.h>
 
@@ -30,7 +32,7 @@ static uint32_t fps_frames;
 /*
  * This buffer is a one-time deterministic scene seed, not a capture frame.
  * DMA repeats the 8-row seed for every pipeline chunk so the test consumes
- * the same 6144-byte payloads without spending CPU cycles on every pixel.
+ * the same fixed-size payload chunks without spending CPU cycles on every pixel.
  * The repeated scene is intentional: this build measures transport capacity,
  * while the real MINI2 DVP adapter will supply the actual bytes.
  */
@@ -136,6 +138,11 @@ const char *t384_frame_source_name(void)
 #else
     return "synthetic-dvp-adapter-v1";
 #endif
+}
+
+bool t384_frame_source_stream_ready(void)
+{
+    return true;
 }
 
 static void finish_physical_frame(uint32_t now)
@@ -286,3 +293,5 @@ void t384_frame_source_get_stats(t384_frame_source_stats_t *out)
         *out = source_stats;
     }
 }
+
+#endif

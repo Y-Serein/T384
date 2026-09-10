@@ -112,7 +112,7 @@
     .copy { margin-bottom: 0; font-size: 13px; line-height: 1.55; }
     .body { padding: 20px; }
 
-    .viewer { position: relative; aspect-ratio: 384 / 288; overflow: hidden; display: grid; place-items: center; background: #111315; }
+    .viewer { position: relative; aspect-ratio: 256 / 192; overflow: hidden; display: grid; place-items: center; background: #111315; }
     .viewer canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
     .viewer-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #9aa0a6; font: 12px var(--mono); letter-spacing: .06em; }
     .viewer-overlay { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; }
@@ -234,7 +234,7 @@
           </div>
           <div class="viewer">
             <div class="viewer-placeholder" id="streamPlaceholder">WAITING FOR STREAM</div>
-            <canvas id="stream" width="384" height="288" role="img" aria-label="384×288 RAW16 实时画面"></canvas>
+            <canvas id="stream" width="256" height="192" role="img" aria-label="RAW16 实时画面"></canvas>
             <div class="viewer-overlay"><span class="pill warn" id="framePill">正在连接</span><span class="pill ok">RAW16</span></div>
           </div>
           <div class="viewer-foot"><span class="viewer-state" id="frameState">正在建立实时流</span><strong class="viewer-rate" id="frameFps">-- FPS</strong></div>
@@ -250,7 +250,7 @@
           </dl>
         </article>
 
-        <div class="note"><strong>链路边界：</strong>采集适配器负责提供 384×288 RAW16；固定队列、NCM、HTTP 与浏览器始终复用同一正式链路。当前源类型以上方实时诊断为准；DVP 电气时序、正式测温表和 T640 仍需实物验证。</div>
+        <div class="note"><strong>链路边界：</strong>当前调试适配器按固件 HTTP 头自动适配 256×192 或 384×288 RAW16；固定队列、NCM、HTTP 与浏览器复用同一正式链路。DVP字节序、正式测温表和T640仍需实物验证。</div>
       </section>
 
       <section id="panel-trend" role="tabpanel" aria-labelledby="tab-trend" hidden>
@@ -326,13 +326,13 @@
 
     const $ = id => document.getElementById(id);
     const CHART_LIMIT = 180;
-    const RAW16_WIDTH = 384;
-    const RAW16_HEIGHT = 288;
-    const RAW16_FRAME_BYTES = RAW16_WIDTH * RAW16_HEIGHT * 2;
+    let RAW16_WIDTH = 256;
+    let RAW16_HEIGHT = 192;
+    let RAW16_FRAME_BYTES = RAW16_WIDTH * RAW16_HEIGHT * 2;
     const RAW16_WIRE_MAGIC = 0x31523354;
     const RAW16_WIRE_VERSION = 1;
     const RAW16_CHUNK_HEADER_BYTES = 36;
-    const RAW16_CHUNK_PAYLOAD_MAX = 6144;
+    let RAW16_CHUNK_PAYLOAD_MAX = 4096;
     const CHUNK_FLAG_FRAME_START = 0x0001;
     const CHUNK_FLAG_FRAME_END = 0x0002;
     const DB_NAME = 't384-raw16-bench-console';
@@ -840,7 +840,7 @@
       browserSequenceErrors = 0;
       browserDiscardedFrames = 0;
       browserProcessMs = 0;
-      const frame = new Uint8Array(RAW16_FRAME_BYTES);
+      let frame = null;
       const header = new Uint8Array(RAW16_CHUNK_HEADER_BYTES);
       const parser = {
         headerOffset: 0,
@@ -857,13 +857,29 @@
           signal: controller.signal
         });
         if (!response.ok) throw new Error('HTTP ' + response.status);
+        const streamWidth = Number(response.headers.get('X-T384-Frame-Width'));
+        const streamHeight = Number(response.headers.get('X-T384-Frame-Height'));
+        const streamFrameBytes = Number(response.headers.get('X-T384-Frame-Bytes'));
+        const streamChunkMax = Number(response.headers.get('X-T384-Chunk-Payload-Max'));
         if (response.headers.get('X-T384-Format') !== 'RAW16LE-CHUNK-V1' ||
             Number(response.headers.get('X-T384-Wire-Version')) !== RAW16_WIRE_VERSION ||
             Number(response.headers.get('X-T384-Chunk-Header-Bytes')) !== RAW16_CHUNK_HEADER_BYTES ||
-            Number(response.headers.get('X-T384-Chunk-Payload-Max')) !== RAW16_CHUNK_PAYLOAD_MAX ||
-            Number(response.headers.get('X-T384-Frame-Bytes')) !== RAW16_FRAME_BYTES) {
+            !((streamWidth === 256 && streamHeight === 192) ||
+              (streamWidth === 384 && streamHeight === 288)) ||
+            streamFrameBytes !== streamWidth * streamHeight * 2 ||
+            (streamChunkMax !== 4096 && streamChunkMax !== 6144)) {
           throw new Error('RAW16 流格式不匹配');
         }
+        RAW16_WIDTH = streamWidth;
+        RAW16_HEIGHT = streamHeight;
+        RAW16_FRAME_BYTES = streamFrameBytes;
+        RAW16_CHUNK_PAYLOAD_MAX = streamChunkMax;
+        const canvas = $('stream');
+        canvas.width = RAW16_WIDTH;
+        canvas.height = RAW16_HEIGHT;
+        canvas.setAttribute('aria-label', RAW16_WIDTH + '×' + RAW16_HEIGHT + ' RAW16 实时画面');
+        rawImageData = null;
+        frame = new Uint8Array(RAW16_FRAME_BYTES);
         if (!response.body) throw new Error('浏览器不支持流式读取');
         const reader = response.body.getReader();
         while (true) {

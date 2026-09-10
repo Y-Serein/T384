@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the source->ring->NCM->HTTP 384x288 RAW16 pipeline.
+"""Validate the source->ring->NCM->HTTP RAW16 pipeline.
 
 The only simulated component is the capture adapter.  The tool validates every
 synthetic RAW16 byte plus the versioned envelope, frame assembly and sustained
@@ -18,13 +18,13 @@ import time
 import urllib.error
 import urllib.request
 
-WIDTH = 384
-HEIGHT = 288
+WIDTH = 256
+HEIGHT = 192
 FRAME_BYTES = WIDTH * HEIGHT * 2
 WIRE_MAGIC = 0x31523354  # bytes: T3R1
 WIRE_VERSION = 1
 WIRE_HEADER_BYTES = 36
-CHUNK_PAYLOAD_MAX = 6144
+CHUNK_PAYLOAD_MAX = 4096
 PIXEL_FORMAT_LE16 = 1
 FLAG_FRAME_START = 0x0001
 FLAG_FRAME_END = 0x0002
@@ -131,8 +131,8 @@ class SourceContract:
 
 
 class FrameAssembler:
-    def __init__(self, expected: bytes, source: SourceContract) -> None:
-        self.expected = expected
+    def __init__(self, expected: bytes | None, source: SourceContract) -> None:
+        self.expected_view = memoryview(expected) if expected is not None else None
         self.source = source
         self.sequence: int | None = None
         self.expected_offset = 0
@@ -147,8 +147,10 @@ class FrameAssembler:
     def consume(self, sequence: int, offset: int, payload, flags: int) -> None:
         self.raw_payload_bytes += len(payload)
         if self.source.validate(flags):
-            expected_slice = memoryview(self.expected)[offset : offset + len(payload)]
-            if memoryview(payload) != expected_slice:
+            if self.expected_view is None:
+                raise BenchError("synthetic source has no expected frame")
+            expected_slice = self.expected_view[offset : offset + len(payload)]
+            if payload != expected_slice:
                 raise BenchError(f"frame {sequence} offset {offset}: RAW16 payload mismatch")
 
         if flags & FLAG_FRAME_START:
@@ -195,7 +197,7 @@ def run(args: argparse.Namespace) -> int:
     )
     header = bytearray(WIRE_HEADER_BYTES)
     payload = bytearray(CHUNK_PAYLOAD_MAX)
-    expected = expected_frame()
+    expected = None if args.expect_source == "real" else expected_frame()
 
     print(
         f"连接 {args.url}；正式分块链路={WIDTH}x{HEIGHT} RAW16LE "
@@ -256,7 +258,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--warmup", type=float, default=3.0)
-    parser.add_argument("--min-mb-s", type=float, default=7.0)
+    parser.add_argument("--min-mb-s", type=float, default=4.5)
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument(
         "--expect-source",

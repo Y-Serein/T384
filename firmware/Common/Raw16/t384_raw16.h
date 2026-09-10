@@ -4,8 +4,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Change this single selector for a product build. */
+#ifndef T384_RAW16_PROFILE
+#define T384_RAW16_PROFILE 256u
+#endif
+
+#if T384_RAW16_PROFILE == 256u
+#define T384_RAW16_WIDTH 256u
+#define T384_RAW16_HEIGHT 192u
+#elif T384_RAW16_PROFILE == 384u
 #define T384_RAW16_WIDTH 384u
 #define T384_RAW16_HEIGHT 288u
+#else
+#error "T384_RAW16_PROFILE must be 256u or 384u"
+#endif
 #define T384_RAW16_BYTES_PER_PIXEL 2u
 #define T384_RAW16_PIXELS (T384_RAW16_WIDTH * T384_RAW16_HEIGHT)
 #define T384_RAW16_FRAME_BYTES \
