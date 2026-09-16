@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +14,22 @@ int main(void)
         0x00u, 0x00u, 0x00u, 0x00u,
         0x00u, 0x00u, 0x00u, 0x00u,
         0x06u, 0x3Bu,
+    };
+    static const uint8_t picture_mode_command[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x10u, 0x10u, 0x45u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0xFBu, 0xC0u,
+    };
+    static const uint8_t tpd_mode_command[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x10u, 0x10u, 0x45u, 0x00u,
+        0x01u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x8Eu, 0xC3u,
     };
     static const uint8_t valid_ack[] = {
         0xBEu, 0xAAu, 0x01u, 0x00u, 0x00u,
@@ -43,12 +60,97 @@ int main(void)
         0x04u, 0x00u, 0x00u, 0x00u,
         0x68u, 0xFBu,
     };
+    static const uint8_t pn_query[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x01u, 0x01u, 0x81u, 0x00u,
+        0x06u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x20u, 0x00u, 0x00u, 0x00u,
+        0xB7u, 0x16u,
+    };
+    static const uint8_t sn_query[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x01u, 0x01u, 0x81u, 0x00u,
+        0x07u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x20u, 0x00u, 0x00u, 0x00u,
+        0xC2u, 0x15u,
+    };
+    static const uint8_t stream_mode_query[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x10u, 0x10u, 0x85u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x01u, 0x00u, 0x00u, 0x00u,
+        0x8Eu, 0xCAu,
+    };
+    static const uint8_t auto_ffc_query[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x10u, 0x02u, 0x81u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x01u, 0x00u, 0x00u, 0x00u,
+        0x78u, 0x34u,
+    };
+    static const uint8_t module_temp_query[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x10u, 0x10u, 0x91u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x02u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x6Au,
+    };
+    static const uint8_t uptime_query[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u,
+        0x10u, 0x10u, 0x93u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u,
+        0x04u, 0x00u, 0x00u, 0x00u,
+        0x5Bu, 0xBBu,
+    };
+    static const uint8_t stream_mode_response[] = {
+        0xBEu, 0xAAu, 0x02u, 0x00u, 0x00u,
+        0x03u, 0xCEu, 0xCAu, 0xEBu, 0xAAu,
+    };
+    static const uint8_t auto_ffc_response[] = {
+        0xBEu, 0xAAu, 0x02u, 0x00u, 0x00u,
+        0x01u, 0x8Cu, 0xEAu, 0xEBu, 0xAAu,
+    };
+    static const uint8_t module_temp_response[] = {
+        0xBEu, 0xAAu, 0x03u, 0x00u, 0x00u,
+        0xAAu, 0x0Cu, 0x3Du, 0x7Au, 0xEBu, 0xAAu,
+    };
+    static const uint8_t uptime_response[] = {
+        0xBEu, 0xAAu, 0x05u, 0x00u, 0x00u,
+        0xD7u, 0x01u, 0x00u, 0x00u,
+        0xEBu, 0x98u, 0xEBu, 0xAAu,
+    };
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES];
+    static const uint8_t vtemp_command[] = {
+        0x55u, 0x43u, 0x49u, 0x12u, 0x00u, 0x01u, 0x0Fu, 0x86u,
+        0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x02u, 0x00u, 0x00u, 0x00u, 0x87u, 0x46u,
+    };
+    t384_mini2_build_vtemp_query_command(command);
+    assert(memcmp(command, vtemp_command, sizeof(vtemp_command)) == 0);
     uint8_t status = 0xFFu;
 
     t384_mini2_build_dvp30_command(command);
     if (memcmp(command, expected_command, sizeof(command)) != 0) {
         return 1;
+    }
+    t384_mini2_build_stream_mode_command(
+        command, T384_MINI2_STREAM_MODE_PICTURE);
+    if (memcmp(command, picture_mode_command, sizeof(command)) != 0) {
+        return 22;
+    }
+    t384_mini2_build_stream_mode_command(
+        command, T384_MINI2_STREAM_MODE_TPD_Y16);
+    if (memcmp(command, tpd_mode_command, sizeof(command)) != 0) {
+        return 23;
+    }
+    if (command[7] == 0x49u) {
+        return 24;
     }
     if (!t384_mini2_parse_generic_ack(valid_ack, &status) || status != 0u) {
         return 2;
@@ -94,6 +196,56 @@ int main(void)
         t384_mini2_crc16_xmodem(command + 5u, 16u) !=
             ((uint16_t)command[21] | ((uint16_t)command[22] << 8))) {
         return 11;
+    }
+    t384_mini2_build_info_query_command(command, 0x06u, 32u);
+    if (memcmp(command, pn_query, sizeof(command)) != 0) {
+        return 12;
+    }
+    t384_mini2_build_info_query_command(command, 0x07u, 32u);
+    if (memcmp(command, sn_query, sizeof(command)) != 0) {
+        return 13;
+    }
+    t384_mini2_build_query_command(command, 0x85u, 1u);
+    if (memcmp(command, stream_mode_query, sizeof(command)) != 0) {
+        return 14;
+    }
+    t384_mini2_build_class_query_command(command, 0x02u, 0x81u, 0u, 1u);
+    if (memcmp(command, auto_ffc_query, sizeof(command)) != 0) {
+        return 15;
+    }
+    t384_mini2_build_query_command(command, 0x91u, 2u);
+    if (memcmp(command, module_temp_query, sizeof(command)) != 0) {
+        return 16;
+    }
+    t384_mini2_build_query_command(command, 0x93u, 4u);
+    if (memcmp(command, uptime_query, sizeof(command)) != 0) {
+        return 17;
+    }
+    if (!t384_mini2_parse_response(stream_mode_response,
+                                   sizeof(stream_mode_response), &status,
+                                   &data, &data_length) ||
+        status != 0u || data_length != 1u || data[0] != 3u) {
+        return 18;
+    }
+    if (!t384_mini2_parse_response(auto_ffc_response,
+                                   sizeof(auto_ffc_response), &status,
+                                   &data, &data_length) ||
+        status != 0u || data_length != 1u || data[0] != 1u) {
+        return 19;
+    }
+    if (!t384_mini2_parse_response(module_temp_response,
+                                   sizeof(module_temp_response), &status,
+                                   &data, &data_length) ||
+        status != 0u || data_length != 2u || data[0] != 0xAAu ||
+        data[1] != 0x0Cu) {
+        return 20;
+    }
+    if (!t384_mini2_parse_response(uptime_response,
+                                   sizeof(uptime_response), &status,
+                                   &data, &data_length) ||
+        status != 0u || data_length != 4u || data[0] != 0xD7u ||
+        data[1] != 0x01u || data[2] != 0u || data[3] != 0u) {
+        return 21;
     }
     t384_mini2_build_video_command(command, 0x46u, 0x00u, 0x00u, 0x00u);
     if (command[7] != 0x46u || command[9] != 0x00u ||

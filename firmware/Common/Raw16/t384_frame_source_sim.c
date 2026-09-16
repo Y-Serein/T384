@@ -1,6 +1,13 @@
 #include "t384_frame_source.h"
+#include "t384_module_files.h"
 
 #if T384_FRAME_SOURCE_SIMULATOR
+
+bool t384_module_file_port_pause(uint8_t **scratch, size_t *capacity)
+{ (void)scratch; (void)capacity; return false; }
+void t384_module_file_port_resume(void) {}
+bool t384_module_file_port_tx(uint8_t byte) { (void)byte; return false; }
+int t384_module_file_port_rx(void) { return -1; }
 
 #include <stddef.h>
 #include <string.h>
@@ -13,6 +20,7 @@
 #include "t384_frame_pipeline.h"
 #include "t384_compiler.h"
 #include "t384_raw16.h"
+#include "t384_raw16_wire.h"
 #include "t384_time.h"
 
 #define T384_SIM_TARGET_BPS 7200000u
@@ -50,8 +58,8 @@ static void dma_source_init(void)
     for (uint32_t word = 0u;
          word < T384_PIPELINE_CHUNK_BYTES / sizeof(uint16_t); ++word) {
         const uint16_t value = t384_raw16_word(0u, word);
-        dma_seed[word * 2u] = (uint8_t)value;
-        dma_seed[word * 2u + 1u] = (uint8_t)(value >> 8);
+        dma_seed[word * 2u] = (uint8_t)(value >> 8);
+        dma_seed[word * 2u + 1u] = (uint8_t)value;
     }
 
     RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
@@ -117,6 +125,9 @@ bool t384_frame_source_init(void)
     source_stats.synthetic = 1u;
 #endif
     source_stats.target_bps = T384_SIM_TARGET_BPS;
+    source_stats.stream_ready = 1u;
+    source_stats.frame_mode = T384_FRAME_MODE_TPD_Y16;
+    source_stats.pixel_format = T384_FRAME_PIXEL_FORMAT_Y16_BE;
     byte_credit_x1000 = 0u;
     credit_updated_ms = t384_millis();
     fps_started_ms = credit_updated_ms;
@@ -143,6 +154,16 @@ const char *t384_frame_source_name(void)
 bool t384_frame_source_stream_ready(void)
 {
     return true;
+}
+
+uint16_t t384_frame_source_pixel_format(void)
+{
+    return T384_FRAME_PIXEL_FORMAT_Y16_BE;
+}
+
+uint16_t t384_frame_source_mode_flags(void)
+{
+    return T384_CHUNK_FLAG_TPD_Y16;
 }
 
 static void finish_physical_frame(uint32_t now)
@@ -225,9 +246,10 @@ void t384_frame_source_task(void)
 
         if (!frame_open && frame_offset == 0u) {
 #if T384_FRAME_SOURCE_DMA_EQUIV && !defined(T384_HOST_SYNTAX_CHECK)
-            const uint16_t source_flags = 0u;
+            const uint16_t source_flags = T384_CHUNK_FLAG_TPD_Y16;
 #else
-            const uint16_t source_flags = T384_CHUNK_FLAG_SYNTHETIC;
+            const uint16_t source_flags =
+                T384_CHUNK_FLAG_SYNTHETIC | T384_CHUNK_FLAG_TPD_Y16;
 #endif
             if (!t384_frame_pipeline_begin_frame(
                     frame_sequence, now, source_flags)) {

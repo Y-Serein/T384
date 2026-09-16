@@ -229,13 +229,13 @@
 
         <article class="card">
           <div class="card-head">
-            <div><h2>RAW16 实时预览</h2><p class="copy">版本化分块 RAW16LE · 自动恢复断线</p></div>
+            <div><h2>MINI2 实时预览</h2><p class="copy" id="formatSummary">正在识别 TPD/Y16 或 Picture/UYVY</p></div>
             <button class="button small" id="streamRetryBtn" type="button">重连画面</button>
           </div>
           <div class="viewer">
             <div class="viewer-placeholder" id="streamPlaceholder">WAITING FOR STREAM</div>
             <canvas id="stream" width="256" height="192" role="img" aria-label="RAW16 实时画面"></canvas>
-            <div class="viewer-overlay"><span class="pill warn" id="framePill">正在连接</span><span class="pill ok">RAW16</span></div>
+            <div class="viewer-overlay"><span class="pill warn" id="framePill">正在连接</span><span class="pill" id="formatPill">待识别</span></div>
           </div>
           <div class="viewer-foot"><span class="viewer-state" id="frameState">正在建立实时流</span><strong class="viewer-rate" id="frameFps">-- FPS</strong></div>
         </article>
@@ -250,7 +250,17 @@
           </dl>
         </article>
 
-        <div class="note"><strong>链路边界：</strong>当前调试适配器按固件 HTTP 头自动适配 256×192 或 384×288 RAW16；固定队列、NCM、HTTP 与浏览器复用同一正式链路。DVP字节序、正式测温表和T640仍需实物验证。</div>
+        <article class="card" aria-labelledby="temperatureTitle">
+          <div class="card-head"><div><h2 id="temperatureTitle">Y16 温度观察</h2><p class="copy">伪彩与温度统计来自同一完整 Y16 帧。</p></div></div>
+          <dl class="metrics">
+            <div><dt>中心温度</dt><dd id="centerTemperature">-- <small>°C</small></dd></div>
+            <div><dt>最低温度</dt><dd id="minimumTemperature">-- <small>°C</small></dd></div>
+            <div><dt>最高温度</dt><dd id="maximumTemperature">-- <small>°C</small></dd></div>
+            <div><dt>中心 Y16</dt><dd id="centerY16">--</dd></div>
+          </dl>
+        </article>
+
+        <div class="note"><strong>测温边界：</strong>TPD/Y16 模式暂用项目既有实验线性映射，页面会明确标为“实验温度”；它不是 KT/BT/NUC-T 辐射测温结果。若固件回退到 Picture/UYVY，页面只显示伪彩并禁用温度读数。</div>
       </section>
 
       <section id="panel-trend" role="tabpanel" aria-labelledby="tab-trend" hidden>
@@ -335,6 +345,13 @@
     let RAW16_CHUNK_PAYLOAD_MAX = 4096;
     const CHUNK_FLAG_FRAME_START = 0x0001;
     const CHUNK_FLAG_FRAME_END = 0x0002;
+    const CHUNK_FLAG_TPD_Y16 = 0x0010;
+    const CHUNK_FLAG_PICTURE_UYVY = 0x0020;
+    const PIXEL_FORMAT_Y16_BE = 2;
+    const PIXEL_FORMAT_UYVY = 3;
+    let streamPixelFormat = 0;
+    let y16ZeroC = NaN;
+    let y16CountsPerC = NaN;
     const DB_NAME = 't384-raw16-bench-console';
     const DB_VERSION = 1;
     const STORE_NAME = 'fps_samples';
@@ -694,11 +711,10 @@
 
     async function poll() {
       clearTimeout(pollTimer);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 1800);
       try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 1800);
         const response = await fetch('/diag', { cache: 'no-store', signal: controller.signal });
-        clearTimeout(timeout);
         if (!response.ok) throw new Error('HTTP ' + response.status);
         update(parseDiag(await response.text()));
       } catch (error) {
@@ -709,8 +725,16 @@
         $('diagMessage').textContent = lastGood ? '上次成功在 ' + Math.round((Date.now() - lastGood) / 1000) + ' 秒前。' : '尚未连接到设备。';
         $('diagRetryBtn').hidden = !disconnected;
       } finally {
+        clearTimeout(timeout);
         pollTimer = setTimeout(poll, document.hidden ? 5000 : 1000);
       }
+    }
+
+    function showTemperature(id, raw) {
+      const temperature = (raw - y16ZeroC) / y16CountsPerC;
+      $(id).innerHTML = Number.isFinite(temperature)
+        ? temperature.toFixed(1) + ' <small>°C</small>'
+        : '-- <small>°C</small>';
     }
 
     function renderRaw16Frame(frame) {
@@ -721,8 +745,34 @@
       }
       const pixels = new Uint32Array(rawImageData.data.buffer,
         rawImageData.data.byteOffset, RAW16_WIDTH * RAW16_HEIGHT);
-      for (let pixel = 0; pixel < pixels.length; pixel += 1) {
-        pixels[pixel] = RAW16_PALETTE[frame[pixel * 2 + 1]];
+      if (streamPixelFormat === PIXEL_FORMAT_Y16_BE) {
+        let minimum = 0xFFFF;
+        let maximum = 0;
+        for (let pixel = 0; pixel < pixels.length; pixel += 1) {
+          const raw = (frame[pixel * 2] << 8) | frame[pixel * 2 + 1];
+          if (raw < minimum) minimum = raw;
+          if (raw > maximum) maximum = raw;
+        }
+        const span = Math.max(1, maximum - minimum);
+        for (let pixel = 0; pixel < pixels.length; pixel += 1) {
+          const raw = (frame[pixel * 2] << 8) | frame[pixel * 2 + 1];
+          pixels[pixel] = RAW16_PALETTE[Math.round((raw - minimum) * 255 / span)];
+        }
+        const centerPixel = Math.floor(RAW16_HEIGHT / 2) * RAW16_WIDTH +
+          Math.floor(RAW16_WIDTH / 2);
+        const center = (frame[centerPixel * 2] << 8) | frame[centerPixel * 2 + 1];
+        showTemperature('centerTemperature', center);
+        showTemperature('minimumTemperature', minimum);
+        showTemperature('maximumTemperature', maximum);
+        $('centerY16').textContent = String(center);
+      } else {
+        for (let pixel = 0; pixel < pixels.length; pixel += 1) {
+          pixels[pixel] = RAW16_PALETTE[frame[pixel * 2 + 1]];
+        }
+        ['centerTemperature', 'minimumTemperature', 'maximumTemperature'].forEach(id => {
+          $(id).innerHTML = '-- <small>°C</small>';
+        });
+        $('centerY16').textContent = '--';
       }
       context.putImageData(rawImageData, 0, 0);
     }
@@ -777,18 +827,22 @@
           view.getUint32(16, true) !== RAW16_FRAME_BYTES ||
           view.getUint16(26, true) !== RAW16_WIDTH ||
           view.getUint16(28, true) !== RAW16_HEIGHT ||
-          view.getUint16(32, true) !== 1 ||
+          view.getUint16(32, true) !== streamPixelFormat ||
           view.getUint16(34, true) !== crc16Xmodem(header, 34)) return null;
       const payloadBytes = view.getUint16(24, true);
       const frameOffset = view.getUint32(12, true);
       if (!payloadBytes || payloadBytes > RAW16_CHUNK_PAYLOAD_MAX ||
           frameOffset + payloadBytes > RAW16_FRAME_BYTES) return null;
+      const flags = view.getUint16(30, true);
+      const modeFlags = flags & (CHUNK_FLAG_TPD_Y16 | CHUNK_FLAG_PICTURE_UYVY);
+      if ((streamPixelFormat === PIXEL_FORMAT_Y16_BE && modeFlags !== CHUNK_FLAG_TPD_Y16) ||
+          (streamPixelFormat === PIXEL_FORMAT_UYVY && modeFlags !== CHUNK_FLAG_PICTURE_UYVY)) return null;
       return {
         sequence: view.getUint32(8, true),
         offset: frameOffset,
         captureMs: view.getUint32(20, true),
         payloadBytes,
-        flags: view.getUint16(30, true)
+        flags
       };
     }
 
@@ -861,19 +915,42 @@
         const streamHeight = Number(response.headers.get('X-T384-Frame-Height'));
         const streamFrameBytes = Number(response.headers.get('X-T384-Frame-Bytes'));
         const streamChunkMax = Number(response.headers.get('X-T384-Chunk-Payload-Max'));
-        if (response.headers.get('X-T384-Format') !== 'RAW16LE-CHUNK-V1' ||
+        const streamFormatCode = Number(response.headers.get('X-T384-Pixel-Format-Code'));
+        const streamMode = response.headers.get('X-T384-Frame-Mode');
+        const temperatureModel = response.headers.get('X-T384-Temperature-Model');
+        if (response.headers.get('X-T384-Format') !== 'T384-FRAME-CHUNK-V1' ||
             Number(response.headers.get('X-T384-Wire-Version')) !== RAW16_WIRE_VERSION ||
             Number(response.headers.get('X-T384-Chunk-Header-Bytes')) !== RAW16_CHUNK_HEADER_BYTES ||
             !((streamWidth === 256 && streamHeight === 192) ||
               (streamWidth === 384 && streamHeight === 288)) ||
             streamFrameBytes !== streamWidth * streamHeight * 2 ||
+            ![PIXEL_FORMAT_Y16_BE, PIXEL_FORMAT_UYVY].includes(streamFormatCode) ||
+            (streamFormatCode === PIXEL_FORMAT_Y16_BE && streamMode !== 'tpd') ||
+            (streamFormatCode === PIXEL_FORMAT_UYVY && streamMode !== 'picture-fallback') ||
             (streamChunkMax !== 4096 && streamChunkMax !== 6144)) {
-          throw new Error('RAW16 流格式不匹配');
+          throw new Error('MINI2 帧流格式不匹配');
         }
         RAW16_WIDTH = streamWidth;
         RAW16_HEIGHT = streamHeight;
         RAW16_FRAME_BYTES = streamFrameBytes;
         RAW16_CHUNK_PAYLOAD_MAX = streamChunkMax;
+        streamPixelFormat = streamFormatCode;
+        const linearParameters = (response.headers.get('X-T384-Y16-Linear-X100') || '')
+          .split(',').map(Number);
+        y16ZeroC = linearParameters[0] / 100;
+        y16CountsPerC = linearParameters[1] / 100;
+        if (temperatureModel !== 'experimental-blackbody-2point-v1' ||
+            linearParameters.length !== 2 || !linearParameters.every(Number.isFinite) ||
+            y16CountsPerC <= 0) {
+          y16ZeroC = NaN;
+          y16CountsPerC = NaN;
+        }
+        const formatName = streamPixelFormat === PIXEL_FORMAT_Y16_BE ? 'TPD / Y16BE' : 'Picture / UYVY 回退';
+        $('formatSummary').textContent = formatName +
+          (streamPixelFormat === PIXEL_FORMAT_Y16_BE && Number.isFinite(y16CountsPerC)
+            ? ' · 实验温度映射' : ' · 温度不可用');
+        setPill($('formatPill'), formatName,
+          streamPixelFormat === PIXEL_FORMAT_Y16_BE ? 'ok' : 'warn');
         const canvas = $('stream');
         canvas.width = RAW16_WIDTH;
         canvas.height = RAW16_HEIGHT;

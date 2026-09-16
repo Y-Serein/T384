@@ -15,8 +15,11 @@ product_pattern_output="/tmp/t384_raw16_product_pattern_smoke"
 pipeline_output="/tmp/t384_raw16_pipeline_smoke"
 product_pipeline_output="/tmp/t384_raw16_product_pipeline_smoke"
 source_output="/tmp/t384_raw16_source_sim_smoke"
+roi_output="/tmp/t384_raw16_roi_smoke"
 checksum_copy_output="/tmp/t384_lwip_checksum_copy_smoke"
 mini2_protocol_output="/tmp/t384_mini2_uart_protocol_smoke"
+radiometry_output="/tmp/t384_radiometry_smoke"
+calibration_storage_output="/tmp/t384_calibration_storage_smoke"
 console_javascript="/tmp/t384_raw16_console.js"
 
 includes=(
@@ -192,9 +195,14 @@ gcc "${common_flags[@]}" -fsyntax-only \
   "$firmware_root/Common/App/t384_ncm.c" \
   "$firmware_root/Common/App/t384_time.c" \
   "$firmware_root/Common/Raw16/t384_raw16.c" \
+  "$firmware_root/Common/Raw16/t384_radiometry.c" \
+  "$firmware_root/Common/Raw16/t384_calibration_storage.c" \
+  "$firmware_root/Common/Raw16/t384_raw16_roi.c" \
   "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c" \
   "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
+  "$firmware_root/Common/Raw16/t384_module_files.c" \
+  "$firmware_root/Common/Raw16/t384_module_files_http.c" \
   "$firmware_root/Common/Raw16/t384_frame_source_sim.c" \
   "$firmware_root/Common/Raw16/t384_raw16_wire.c" \
   "$firmware_root/V3F/User/main.c" \
@@ -270,6 +278,28 @@ gcc -std=gnu99 -Wall -Wextra -Werror \
   -o "$mini2_protocol_output"
 "$mini2_protocol_output"
 
+gcc -std=gnu99 -Wall -Wextra -Werror \
+  -I"$firmware_root/Common/Raw16" \
+  "$project_root/tests/radiometry_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_radiometry.c" \
+  -o "$radiometry_output"
+"$radiometry_output"
+
+gcc -std=gnu99 -Wall -Wextra -Werror \
+  -I"$firmware_root/Common/Raw16" \
+  "$project_root/tests/t384_calibration_storage_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_calibration_storage.c" \
+  -o "$calibration_storage_output"
+"$calibration_storage_output"
+echo "T384 calibration storage smoke passed"
+
+gcc -std=gnu99 -Wall -Wextra -Werror \
+  -I"$firmware_root/Common/Raw16" \
+  "$project_root/tests/raw16_roi_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_raw16_roi.c" \
+  -o "$roi_output"
+"$roi_output"
+
 gcc "${common_flags[@]}" -ffunction-sections -fdata-sections \
   "$project_root/tests/lwip_checksum_copy_smoke.c" \
   "$firmware_root/ThirdParty/lwIP/src/core/inet_chksum.c" \
@@ -278,7 +308,23 @@ gcc "${common_flags[@]}" -ffunction-sections -fdata-sections \
 
 PYTHONPYCACHEPREFIX=/tmp/t384_raw16_pycache \
   python3 -m py_compile "$project_root/tools/t384_raw16_bench.py"
+PYTHONPYCACHEPREFIX=/tmp/t384_raw16_pycache \
+  python3 -m py_compile "$project_root/tools/capture_radiometry_calibration.py"
+PYTHONPYCACHEPREFIX=/tmp/t384_raw16_pycache \
+  python3 -m py_compile "$project_root/tests/radiometry_manifest_smoke.py"
+PYTHONPYCACHEPREFIX=/tmp/t384_raw16_pycache \
+  python3 -m py_compile "$project_root/tools/analyze_blackbody_pair.py"
+PYTHONPYCACHEPREFIX=/tmp/t384_raw16_pycache \
+  python3 -m py_compile "$project_root/tests/blackbody_pair_smoke.py"
+PYTHONPYCACHEPREFIX=/tmp/t384_raw16_pycache \
+  python3 "$project_root/tests/raw16_host_protocol_smoke.py" \
+    "$project_root/tools/t384_raw16_bench.py"
 python3 "$project_root/tools/t384_raw16_bench.py" --help >/dev/null
+python3 "$project_root/tools/capture_radiometry_calibration.py" --help >/dev/null
+python3 "$project_root/tests/radiometry_manifest_smoke.py"
+python3 "$project_root/tests/blackbody_pair_smoke.py"
+bash "$project_root/tools/check_module_files.sh"
+bash -n "$project_root/tools/read_wn2256_calibration.sh"
 
 rg -q '"mcu": "CH32H417WEU"' \
   "$firmware_root/V3F/T384-RAW16-BENCH_V3F.wvproj"
@@ -308,8 +354,33 @@ if rg --hidden -a -q 'obj/T384-NCM_V3F\.(hex|elf)' \
 fi
 rg -Fq '#if T384_RAW16_FRAME_BYTES != 98304u && T384_RAW16_FRAME_BYTES != 221184u' \
   "$firmware_root/Common/Raw16/t384_raw16.c"
-rg -Fq 'X-T384-Format: RAW16LE-CHUNK-V1' \
+rg -Fq 'X-T384-Format: T384-FRAME-CHUNK-V1' \
   "$firmware_root/Common/App/http_status.c"
+rg -Fq 'X-T384-Pixel-Format-Code: %u' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'T384_EXPERIMENTAL_Y16_ZERO_C_X100 3865997u' \
+  "$firmware_root/Common/App/t384_product_config.h"
+rg -Fq 'T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 11828u' \
+  "$firmware_root/Common/App/t384_product_config.h"
+rg -Fq 'experimental-blackbody-2point-v1' \
+  "$firmware_root/Common/App/http_status.c" \
+  "$project_root/web/raw16_bench_console.html" \
+  "$project_root/tools/t384_raw16_bench.py"
+rg -Fq '/api/v1/calibration/v1/manifest' "$firmware_root/Common/App/http_status.c"
+rg -Fq '/api/v1/calibration/v1/data' "$firmware_root/Common/App/http_status.c"
+rg -Fq 't384_cal_storage_finish' "$firmware_root/Common/App/http_status.c"
+rg -Fq 'T384_CAL_STORAGE_SLOT0_ADDR' "$firmware_root/Common/Raw16/t384_calibration_storage.h"
+rg -Fq 'X-T384-Y16-Linear-X100: %lu,%lu' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'mini2_uart0_send_stream_mode(' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_control_picture_fallback_used' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+if rg -n 'send_video_command\(0x49u|build_video_command\([^;]*0x49u' \
+    "$firmware_root/Common/Raw16"; then
+  echo "MINI2 persistent video-format command 0x49 must not be sent" >&2
+  exit 1
+fi
 rg -Fq 't384_frame_pipeline_peek' \
   "$firmware_root/Common/App/http_status.c"
 if rg -q 't384_raw16_fill' "$firmware_root/Common/App/http_status.c"; then
@@ -337,7 +408,7 @@ rg -Fq '#define T384_NCM_RX_BUDGET 8u' \
 rg -Fq 'queue_static_chunk' "$firmware_root/Common/App/http_status.c"
 rg -Fq '#define T384_FRAME_SOURCE_SIMULATOR 0' \
   "$firmware_root/Common/Raw16/t384_frame_source.h"
-rg -Fq 'mini2-dvp-raw16-v1' \
+rg -Fq 'mini2-dvp-y16-picture-v2' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
 rg -Fq 't384_frame_source_stream_ready' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
@@ -351,14 +422,62 @@ rg -Fq 'mini2_uart0_query(0x86u' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
 rg -Fq 'mini2_uart0_query_info(0x01u' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 't384_raw16_roi_add_be16_row(' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'roi_frame_bad == 0u' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'roi_capture_complete, frame_published' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'roi.pipeline_published=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'roi.mean_raw_x100=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'roi.le_mean_raw_x100=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'roi.be_mean_raw_x100=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'roi.le_stddev_raw_x100=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'roi_snapshot.le_sum_squares' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'const uint16_t le_sample' \
+  "$firmware_root/Common/Raw16/t384_raw16_roi.c"
+if rg -qi 'uart|command|flash|persist|save' \
+    "$firmware_root/Common/Raw16/t384_raw16_roi.c" \
+    "$firmware_root/Common/Raw16/t384_raw16_roi.h"; then
+  echo "RAW16 ROI statistics must remain passive and volatile" >&2
+  exit 1
+fi
 rg -Fq 'mini2_uart0_query_info(0x02u' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_uart0_query_info(0x06u' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_uart0_query_info(0x07u' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'const int stream_mode_query' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2_uart0_query_class(' \
+  "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
+rg -Fq 'mini2.query_stream_mode_0x85=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'mini2.query_auto_ffc_enabled=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'mini2.query_module_temp_c_x100=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'mini2.query_uptime_seconds=' \
+  "$firmware_root/Common/App/http_status.c"
+rg -Fq 'mini2.pn=' "$firmware_root/Common/App/http_status.c"
+rg -Fq 'mini2.sn=' "$firmware_root/Common/App/http_status.c"
 rg -Fq 'DMA_M2M_Enable' \
   "$firmware_root/Common/Raw16/t384_frame_source_sim.c"
 rg -Fq 'dma-equivalent-dvp-source-v1' \
   "$firmware_root/Common/Raw16/t384_frame_source_sim.c"
 rg -Fq "fetch('/raw16.stream" "$project_root/web/raw16_bench_console.html"
-rg -Fq 'RAW16LE-CHUNK-V1' "$project_root/web/raw16_bench_console.html"
+rg -Fq 'T384-FRAME-CHUNK-V1' "$project_root/web/raw16_bench_console.html"
+rg -Fq 'PIXEL_FORMAT_Y16_BE' "$project_root/web/raw16_bench_console.html"
+rg -Fq 'PIXEL_FORMAT_UYVY' "$project_root/web/raw16_bench_console.html"
+rg -Fq "temperatureModel !== 'experimental-blackbody-2point-v1'" \
+  "$project_root/web/raw16_bench_console.html"
 rg -Fq 'pixels[pixel] = RAW16_PALETTE' \
   "$project_root/web/raw16_bench_console.html"
 rg -Fq 'let recording = false' "$project_root/web/raw16_bench_console.html"
@@ -407,12 +526,21 @@ if [[ -f "$map_file" ]]; then
       "$firmware_root/Common/USB/dcd_ch32h417_usbhs.c" \
       "$firmware_root/Common/Raw16/t384_raw16.c" \
       "$firmware_root/Common/Raw16/t384_raw16.h" \
+      "$firmware_root/Common/Raw16/t384_radiometry.c" \
+      "$firmware_root/Common/Raw16/t384_calibration_storage.c" \
+      "$firmware_root/Common/Raw16/t384_radiometry.h" \
       "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
       "$firmware_root/Common/Raw16/t384_frame_pipeline.h" \
       "$firmware_root/Common/Raw16/t384_frame_source_mini2.c" \
       "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
       "$firmware_root/Common/Raw16/t384_mini2_protocol.h" \
+      "$firmware_root/Common/Raw16/t384_module_files.c" \
+      "$firmware_root/Common/Raw16/t384_module_files.h" \
+      "$firmware_root/Common/Raw16/t384_module_files_http.c" \
+      "$firmware_root/Common/Raw16/t384_module_files_http.h" \
       "$firmware_root/Common/Raw16/t384_frame_source_sim.c" \
+      "$firmware_root/Common/Raw16/t384_raw16_roi.c" \
+      "$firmware_root/Common/Raw16/t384_raw16_roi.h" \
       "$firmware_root/Common/Raw16/t384_raw16_wire.c" \
       "$firmware_root/ThirdParty/TinyUSB/src/class/net/net_device.h" \
       "$firmware_root/ThirdParty/TinyUSB/src/class/net/ncm_device.c"; do

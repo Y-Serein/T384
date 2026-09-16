@@ -41,8 +41,16 @@
 #define T384_MINI2_DVP_EXPECTED_ROWS T384_MINI2_DVP_HEIGHT
 #if T384_RAW16_PROFILE == 256u
 #define T384_MINI2_DVP_FPS 50u
+/* WN2256 engineering-only 0/50 C blackbody fit (1 cm, emissivity 0.98).
+ * This is intentionally distinct from the fail-closed OEM radiometry path. */
+#define T384_EXPERIMENTAL_TEMP_MODEL "experimental-blackbody-2point-v1"
+#define T384_EXPERIMENTAL_Y16_ZERO_C_X100 3865997u
+#define T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 11828u
 #else
 #define T384_MINI2_DVP_FPS 30u
+#define T384_EXPERIMENTAL_TEMP_MODEL "unavailable"
+#define T384_EXPERIMENTAL_Y16_ZERO_C_X100 0u
+#define T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 0u
 #endif
 #define T384_MINI2_DVP_PCLK_FALLING 0u
 #define T384_MINI2_DVP_HSYNC_LOW 0u

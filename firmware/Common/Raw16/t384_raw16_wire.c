@@ -33,6 +33,26 @@ uint16_t t384_raw16_crc16_xmodem(const uint8_t *data, uint16_t length)
     return crc;
 }
 
+uint16_t t384_frame_pixel_format_from_flags(uint16_t flags)
+{
+    const uint16_t mode = flags & T384_CHUNK_FLAG_DATA_MODE_MASK;
+    if (mode == T384_CHUNK_FLAG_TPD_Y16) {
+        return T384_FRAME_PIXEL_FORMAT_Y16_BE;
+    }
+    if (mode == T384_CHUNK_FLAG_PICTURE_UYVY) {
+        return T384_FRAME_PIXEL_FORMAT_UYVY;
+    }
+    return 0u;
+}
+
+const char *t384_frame_pixel_format_name(uint16_t pixel_format)
+{
+    if (pixel_format == T384_FRAME_PIXEL_FORMAT_Y16_BE) {
+        return "Y16BE";
+    }
+    return pixel_format == T384_FRAME_PIXEL_FORMAT_UYVY ? "UYVY" : "UNKNOWN";
+}
+
 void t384_raw16_wire_encode(uint8_t output[T384_RAW16_WIRE_HEADER_BYTES],
                             const t384_frame_chunk_view_t *chunk)
 {
@@ -50,6 +70,6 @@ void t384_raw16_wire_encode(uint8_t output[T384_RAW16_WIRE_HEADER_BYTES],
     put_le16(output + 26u, T384_RAW16_WIDTH);
     put_le16(output + 28u, T384_RAW16_HEIGHT);
     put_le16(output + 30u, chunk->flags);
-    put_le16(output + 32u, T384_RAW16_PIXEL_FORMAT_LE16);
+    put_le16(output + 32u, t384_frame_pixel_format_from_flags(chunk->flags));
     put_le16(output + 34u, t384_raw16_crc16_xmodem(output, 34u));
 }

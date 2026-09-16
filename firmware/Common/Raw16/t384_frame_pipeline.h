@@ -2,6 +2,7 @@
 #define T384_FRAME_PIPELINE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "t384_raw16.h"
@@ -18,6 +19,10 @@
 #define T384_CHUNK_FLAG_FRAME_START 0x0001u
 #define T384_CHUNK_FLAG_FRAME_END 0x0002u
 #define T384_CHUNK_FLAG_SYNTHETIC 0x0004u
+#define T384_CHUNK_FLAG_TPD_Y16 0x0010u
+#define T384_CHUNK_FLAG_PICTURE_UYVY 0x0020u
+#define T384_CHUNK_FLAG_DATA_MODE_MASK \
+    (T384_CHUNK_FLAG_TPD_Y16 | T384_CHUNK_FLAG_PICTURE_UYVY)
 
 typedef struct {
     const uint8_t *data;
@@ -62,5 +67,10 @@ void t384_frame_pipeline_abort_frame(void);
 bool t384_frame_pipeline_peek(t384_frame_chunk_view_t *view);
 void t384_frame_pipeline_release(void);
 void t384_frame_pipeline_get_stats(t384_frame_pipeline_stats_t *out);
+
+/* Main-task only, after source DMA/ISR stopped and every consumer released.
+ * Exclusively borrows existing payload memory; no extra full-table buffer. */
+bool t384_frame_pipeline_scratch_acquire(uint8_t **data, size_t *capacity);
+void t384_frame_pipeline_scratch_release(void);
 
 #endif

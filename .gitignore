@@ -12,3 +12,8 @@ tests/**/obj/
 *.py[cod]
 tools/windows_user_action.ps1
 tools/wsl_user_action.sh
+tools/t384_web/
+docs/
+out/
+.agents/
+

@@ -25,7 +25,7 @@ size_t t384_raw16_fill(uint32_t frame_index, uint32_t frame_offset,
     uint32_t word_index = frame_offset / 2u;
 
     if ((frame_offset & 1u) != 0u && length != 0u) {
-        *destination++ = (uint8_t)(t384_raw16_word(frame_index, word_index) >> 8);
+        *destination++ = (uint8_t)t384_raw16_word(frame_index, word_index);
         --length;
         ++word_index;
     }
@@ -33,8 +33,8 @@ size_t t384_raw16_fill(uint32_t frame_index, uint32_t frame_offset,
     if (length >= 2u) {
         uint16_t value = t384_raw16_word(frame_index, word_index);
         while (length >= 2u) {
-            destination[0] = (uint8_t)value;
-            destination[1] = (uint8_t)(value >> 8);
+            destination[0] = (uint8_t)(value >> 8);
+            destination[1] = (uint8_t)value;
             destination += 2;
             length -= 2u;
             ++word_index;
@@ -42,7 +42,8 @@ size_t t384_raw16_fill(uint32_t frame_index, uint32_t frame_offset,
         }
     }
     if (length != 0u) {
-        *destination = (uint8_t)t384_raw16_word(frame_index, word_index);
+        *destination =
+            (uint8_t)(t384_raw16_word(frame_index, word_index) >> 8);
     }
     return written;
 }

@@ -28,6 +28,7 @@ static volatile uint32_t producer_stats_sequence;
 static volatile bool producer_active;
 static volatile bool producer_leased;
 static bool consumer_leased;
+static bool scratch_leased;
 static uint32_t producer_frame_sequence;
 static uint32_t producer_frame_offset;
 static uint32_t producer_capture_ms;
@@ -90,6 +91,7 @@ void t384_frame_pipeline_init(void)
     producer_active = false;
     producer_leased = false;
     consumer_leased = false;
+    scratch_leased = false;
     producer_frame_offset = 0u;
     producer_next_slot = 0u;
     consumer_next_slot = 0u;
@@ -104,7 +106,11 @@ bool t384_frame_pipeline_begin_frame(uint32_t frame_sequence,
                                      uint32_t capture_ms,
                                      uint16_t source_flags)
 {
-    if (producer_active || producer_leased) {
+    if (scratch_leased) return false;
+    const uint16_t data_mode = source_flags & T384_CHUNK_FLAG_DATA_MODE_MASK;
+    if (producer_active || producer_leased ||
+        (data_mode != T384_CHUNK_FLAG_TPD_Y16 &&
+         data_mode != T384_CHUNK_FLAG_PICTURE_UYVY)) {
         protocol_error();
         return false;
     }
@@ -117,6 +123,21 @@ bool t384_frame_pipeline_begin_frame(uint32_t frame_sequence,
     ++stats.frames_started;
     producer_stats_end();
     return true;
+}
+
+bool t384_frame_pipeline_scratch_acquire(uint8_t **data, size_t *capacity)
+{
+    if (data == NULL || capacity == NULL || scratch_leased || consumer_leased ||
+        !t384_frame_pipeline_empty()) return false;
+    scratch_leased = true;
+    *data = (uint8_t *)slot_data;
+    *capacity = sizeof(slot_data);
+    return true;
+}
+
+void t384_frame_pipeline_scratch_release(void)
+{
+    scratch_leased = false;
 }
 
 bool t384_frame_pipeline_acquire_write(uint8_t **data, uint16_t *capacity)

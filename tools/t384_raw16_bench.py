@@ -25,10 +25,14 @@ WIRE_MAGIC = 0x31523354  # bytes: T3R1
 WIRE_VERSION = 1
 WIRE_HEADER_BYTES = 36
 CHUNK_PAYLOAD_MAX = 4096
-PIXEL_FORMAT_LE16 = 1
+PIXEL_FORMAT_Y16_BE = 2
+PIXEL_FORMAT_UYVY = 3
 FLAG_FRAME_START = 0x0001
 FLAG_FRAME_END = 0x0002
 FLAG_SYNTHETIC = 0x0004
+FLAG_TPD_Y16 = 0x0010
+FLAG_PICTURE_UYVY = 0x0020
+FLAG_DATA_MODE_MASK = FLAG_TPD_Y16 | FLAG_PICTURE_UYVY
 HEADER_STRUCT = struct.Struct("<IHHIIIIHHHHHH")
 DEFAULT_URL = "http://192.168.18.1/raw16.stream"
 
@@ -40,7 +44,7 @@ class BenchError(RuntimeError):
 def expected_frame() -> bytes:
     frame = bytearray(FRAME_BYTES)
     for word_index in range(WIDTH * HEIGHT):
-        struct.pack_into("<H", frame, word_index * 2, (word_index * 257 + 0x0348) & 0xFFFF)
+        struct.pack_into(">H", frame, word_index * 2, (word_index * 257 + 0x0348) & 0xFFFF)
     return bytes(frame)
 
 
@@ -58,18 +62,21 @@ def read_exact(stream, destination) -> None:
         offset += count
 
 
-def decode_header(header: bytearray) -> tuple[int, int, int, int, int]:
+def decode_header(header: bytearray, expected_pixel_format: int,
+                  expected_mode_flag: int, frame_bytes: int = FRAME_BYTES,
+                  width: int = WIDTH, height: int = HEIGHT,
+                  chunk_payload_max: int = CHUNK_PAYLOAD_MAX) -> tuple[int, int, int, int, int]:
     (
         magic,
         version,
         header_bytes,
         sequence,
         frame_offset,
-        frame_bytes,
+        chunk_frame_bytes,
         capture_ms,
         payload_bytes,
-        width,
-        height,
+        chunk_width,
+        chunk_height,
         flags,
         pixel_format,
         crc,
@@ -78,40 +85,105 @@ def decode_header(header: bytearray) -> tuple[int, int, int, int, int]:
         raise BenchError(f"invalid chunk envelope magic/version: 0x{magic:08X}/{version}/{header_bytes}")
     if binascii.crc_hqx(memoryview(header)[:34], 0) != crc:
         raise BenchError(f"frame {sequence} offset {frame_offset}: header CRC mismatch")
-    if frame_bytes != FRAME_BYTES or width != WIDTH or height != HEIGHT:
-        raise BenchError(f"frame {sequence}: geometry mismatch {width}x{height}/{frame_bytes}")
-    if pixel_format != PIXEL_FORMAT_LE16:
-        raise BenchError(f"frame {sequence}: pixel format {pixel_format} is not RAW16LE")
-    if not 0 < payload_bytes <= CHUNK_PAYLOAD_MAX or frame_offset + payload_bytes > FRAME_BYTES:
+    if chunk_frame_bytes != frame_bytes or chunk_width != width or chunk_height != height:
+        raise BenchError(
+            f"frame {sequence}: geometry mismatch "
+            f"{chunk_width}x{chunk_height}/{chunk_frame_bytes}"
+        )
+    if pixel_format != expected_pixel_format:
+        raise BenchError(
+            f"frame {sequence}: pixel format changed {pixel_format}/{expected_pixel_format}"
+        )
+    if flags & FLAG_DATA_MODE_MASK != expected_mode_flag:
+        raise BenchError(f"frame {sequence}: data mode flags 0x{flags:04X} mismatch")
+    if not 0 < payload_bytes <= chunk_payload_max or frame_offset + payload_bytes > frame_bytes:
         raise BenchError(f"frame {sequence}: invalid chunk {frame_offset}+{payload_bytes}")
     return sequence, frame_offset, capture_ms, payload_bytes, flags
 
 
-def verify_headers(response) -> None:
+def verify_headers(response, allow_geometry: bool = False) -> tuple[int, int, str]:
     if response.status != 200:
         raise BenchError(f"HTTP status is {response.status}, expected 200")
     required = {
-        "Content-Type": "application/x-t384-raw16-chunks",
-        "X-T384-Format": "RAW16LE-CHUNK-V1",
+        "Content-Type": "application/x-t384-frame-chunks",
+        "X-T384-Format": "T384-FRAME-CHUNK-V1",
         "X-T384-Wire-Version": str(WIRE_VERSION),
         "X-T384-Chunk-Header-Bytes": str(WIRE_HEADER_BYTES),
-        "X-T384-Chunk-Payload-Max": str(CHUNK_PAYLOAD_MAX),
-        "X-T384-Frame-Width": str(WIDTH),
-        "X-T384-Frame-Height": str(HEIGHT),
-        "X-T384-Frame-Bytes": str(FRAME_BYTES),
     }
     for name, expected in required.items():
         actual = response.headers.get(name)
         if actual != expected:
             raise BenchError(f"{name} is {actual!r}, expected {expected!r}")
+    try:
+        stream_width = int(response.headers.get("X-T384-Frame-Width", ""))
+        stream_height = int(response.headers.get("X-T384-Frame-Height", ""))
+        stream_frame_bytes = int(response.headers.get("X-T384-Frame-Bytes", ""))
+        stream_chunk_max = int(response.headers.get("X-T384-Chunk-Payload-Max", ""))
+    except ValueError as error:
+        raise BenchError("invalid stream geometry headers") from error
+    if allow_geometry:
+        if (stream_width, stream_height) not in ((256, 192), (384, 288)):
+            raise BenchError(f"unsupported stream geometry {stream_width}x{stream_height}")
+        if stream_frame_bytes != stream_width * stream_height * 2:
+            raise BenchError("stream frame byte count does not match geometry")
+        if stream_chunk_max not in (4096, 6144):
+            raise BenchError(f"unsupported chunk payload max {stream_chunk_max}")
+    elif {
+        "X-T384-Chunk-Payload-Max": str(CHUNK_PAYLOAD_MAX),
+        "X-T384-Frame-Width": str(WIDTH),
+        "X-T384-Frame-Height": str(HEIGHT),
+        "X-T384-Frame-Bytes": str(FRAME_BYTES),
+    } != {
+        name: response.headers.get(name)
+        for name in (
+            "X-T384-Chunk-Payload-Max",
+            "X-T384-Frame-Width",
+            "X-T384-Frame-Height",
+            "X-T384-Frame-Bytes",
+        )
+    }:
+        raise BenchError("stream geometry does not match 256x192 bench")
+    frame_mode = response.headers.get("X-T384-Frame-Mode")
+    pixel_name = response.headers.get("X-T384-Pixel-Format")
+    try:
+        pixel_format = int(response.headers.get("X-T384-Pixel-Format-Code", ""))
+    except ValueError as error:
+        raise BenchError("invalid X-T384-Pixel-Format-Code") from error
+    formats = {
+        "tpd": (PIXEL_FORMAT_Y16_BE, "Y16BE", FLAG_TPD_Y16),
+        "picture-fallback": (PIXEL_FORMAT_UYVY, "UYVY", FLAG_PICTURE_UYVY),
+    }
+    if frame_mode not in formats:
+        raise BenchError(f"unsupported X-T384-Frame-Mode {frame_mode!r}")
+    expected_format, expected_name, mode_flag = formats[frame_mode]
+    if (pixel_format, pixel_name) != (expected_format, expected_name):
+        raise BenchError(
+            f"inconsistent pixel format {pixel_format}/{pixel_name!r} for {frame_mode}"
+        )
+    temperature_model = response.headers.get("X-T384-Temperature-Model")
+    expected_model = (
+        "experimental-blackbody-2point-v1" if frame_mode == "tpd" else "unavailable"
+    )
+    if temperature_model != expected_model:
+        raise BenchError(
+            f"temperature model {temperature_model!r}, expected {expected_model!r}"
+        )
+    if frame_mode == "tpd" and response.headers.get(
+        "X-T384-Y16-Linear-X100"
+    ) != "3865997,11828":
+        raise BenchError("missing or invalid Y16 experimental mapping")
+    return pixel_format, mode_flag, frame_mode
 
 
 class SourceContract:
-    def __init__(self, expected_mode: str) -> None:
+    def __init__(self, expected_mode: str, data_mode_flag: int) -> None:
         self.expected_mode = expected_mode
+        self.data_mode_flag = data_mode_flag
         self.synthetic: bool | None = None
 
     def validate(self, flags: int) -> bool:
+        if flags & FLAG_DATA_MODE_MASK != self.data_mode_flag:
+            raise BenchError("frame data mode changed inside one stream")
         synthetic = bool(flags & FLAG_SYNTHETIC)
         if self.synthetic is None:
             self.synthetic = synthetic
@@ -181,9 +253,15 @@ class FrameAssembler:
             self.valid = False
 
 
-def read_chunk(stream, header: bytearray, payload: bytearray):
+def read_chunk(stream, header: bytearray, payload: bytearray,
+               pixel_format: int, mode_flag: int, frame_bytes: int = FRAME_BYTES,
+               width: int = WIDTH, height: int = HEIGHT,
+               chunk_payload_max: int = CHUNK_PAYLOAD_MAX):
     read_exact(stream, header)
-    sequence, offset, capture_ms, payload_bytes, flags = decode_header(header)
+    sequence, offset, capture_ms, payload_bytes, flags = decode_header(
+        header, pixel_format, mode_flag, frame_bytes, width, height,
+        chunk_payload_max
+    )
     chunk = memoryview(payload)[:payload_bytes]
     read_exact(stream, chunk)
     return sequence, offset, capture_ms, chunk, flags
@@ -197,32 +275,38 @@ def run(args: argparse.Namespace) -> int:
     )
     header = bytearray(WIRE_HEADER_BYTES)
     payload = bytearray(CHUNK_PAYLOAD_MAX)
-    expected = None if args.expect_source == "real" else expected_frame()
-
-    print(
-        f"连接 {args.url}；正式分块链路={WIDTH}x{HEIGHT} RAW16LE "
-        f"({FRAME_BYTES} B/frame)，完整帧门槛={args.min_mb_s:.3f} MB/s"
-    )
     with opener.open(request, timeout=args.timeout) as response:
-        verify_headers(response)
+        pixel_format, mode_flag, frame_mode = verify_headers(response)
+        expected = (expected_frame() if args.expect_source != "real" and
+                    pixel_format == PIXEL_FORMAT_Y16_BE else None)
+        print(
+            f"连接 {args.url}；正式分块链路={WIDTH}x{HEIGHT} {frame_mode} "
+            f"({FRAME_BYTES} B/frame)，完整帧门槛={args.min_mb_s:.3f} MB/s"
+        )
 
-        source = SourceContract(args.expect_source)
+        source = SourceContract(args.expect_source, mode_flag)
         warmup = FrameAssembler(expected, source)
         warmup_deadline = time.monotonic() + args.warmup
         while time.monotonic() < warmup_deadline:
-            sequence, offset, _, chunk, flags = read_chunk(response, header, payload)
+            sequence, offset, _, chunk, flags = read_chunk(
+                response, header, payload, pixel_format, mode_flag
+            )
             warmup.consume(sequence, offset, chunk, flags)
 
         measured = FrameAssembler(expected, source)
         while True:
-            sequence, offset, _, chunk, flags = read_chunk(response, header, payload)
+            sequence, offset, _, chunk, flags = read_chunk(
+                response, header, payload, pixel_format, mode_flag
+            )
             if flags & FLAG_FRAME_START:
                 break
         started = time.monotonic()
         measured.consume(sequence, offset, chunk, flags)
         deadline = started + args.duration
         while time.monotonic() < deadline:
-            sequence, offset, _, chunk, flags = read_chunk(response, header, payload)
+            sequence, offset, _, chunk, flags = read_chunk(
+                response, header, payload, pixel_format, mode_flag
+            )
             measured.consume(sequence, offset, chunk, flags)
         elapsed = time.monotonic() - started
 
@@ -249,7 +333,7 @@ def run(args: argparse.Namespace) -> int:
     if failures:
         print("FAIL：" + "；".join(failures), file=sys.stderr)
         return 1
-    print("PASS：采集适配器、固定队列、分块协议、全像素、帧序号与持续吞吐均通过")
+    print("PASS：完整帧、分块校验、帧序号与设置的吞吐门槛通过；不代表测温精度或长期稳定性认证")
     return 0
 
 

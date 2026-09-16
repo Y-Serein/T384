@@ -35,8 +35,13 @@ int main(void)
 
     for (uint32_t word = 0u; word < T384_RAW16_PIXELS; ++word) {
         const uint16_t actual =
+#if defined(T384_RAW16_PIXEL_BIG_ENDIAN) && T384_RAW16_PIXEL_BIG_ENDIAN
+            (uint16_t)(((uint16_t)frame[word * 2u] << 8) |
+                       (uint16_t)frame[word * 2u + 1u]);
+#else
             (uint16_t)((uint16_t)frame[word * 2u] |
                        ((uint16_t)frame[word * 2u + 1u] << 8));
+#endif
         assert(actual == t384_raw16_word(frame_index, word));
     }
 

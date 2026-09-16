@@ -34,7 +34,8 @@ int main(void)
     const uint32_t sequence = 0x12345678u;
     t384_frame_pipeline_init();
     assert(t384_frame_pipeline_begin_frame(sequence, 4321u,
-                                           T384_CHUNK_FLAG_SYNTHETIC));
+                                           T384_CHUNK_FLAG_SYNTHETIC |
+                                               T384_CHUNK_FLAG_TPD_Y16));
 
     for (uint32_t offset = 0u; offset < T384_RAW16_FRAME_BYTES;
          offset += T384_PIPELINE_CHUNK_BYTES) {
@@ -48,11 +49,13 @@ int main(void)
         assert(chunk.frame_offset == offset);
         assert(chunk.length == T384_PIPELINE_CHUNK_BYTES);
         assert((chunk.flags & T384_CHUNK_FLAG_SYNTHETIC) != 0u);
+        assert((chunk.flags & T384_CHUNK_FLAG_DATA_MODE_MASK) ==
+               T384_CHUNK_FLAG_TPD_Y16);
         assert(((chunk.flags & T384_CHUNK_FLAG_FRAME_START) != 0u) ==
                (offset == 0u));
         assert(((chunk.flags & T384_CHUNK_FLAG_FRAME_END) != 0u) == end);
         assert(chunk.data[0] ==
-               (uint8_t)t384_raw16_word(sequence, offset / 2u));
+               (uint8_t)(t384_raw16_word(sequence, offset / 2u) >> 8));
 
         uint8_t header[T384_RAW16_WIRE_HEADER_BYTES];
         t384_raw16_wire_encode(header, &chunk);
@@ -63,6 +66,7 @@ int main(void)
         assert(get_le32(header + 12u) == offset);
         assert(get_le32(header + 16u) == T384_RAW16_FRAME_BYTES);
         assert(get_le16(header + 24u) == T384_PIPELINE_CHUNK_BYTES);
+        assert(get_le16(header + 32u) == T384_FRAME_PIXEL_FORMAT_Y16_BE);
         assert(get_le16(header + 34u) ==
                t384_raw16_crc16_xmodem(header, 34u));
         t384_frame_pipeline_release();
@@ -81,8 +85,16 @@ int main(void)
     assert(stats.queued_chunks == 0u);
     assert(stats.high_water_chunks == 1u);
 
+    t384_frame_chunk_view_t picture = {0};
+    uint8_t picture_header[T384_RAW16_WIRE_HEADER_BYTES];
+    picture.flags = T384_CHUNK_FLAG_FRAME_START |
+                    T384_CHUNK_FLAG_PICTURE_UYVY;
+    t384_raw16_wire_encode(picture_header, &picture);
+    assert(get_le16(picture_header + 32u) == T384_FRAME_PIXEL_FORMAT_UYVY);
+
     t384_frame_pipeline_init();
-    assert(t384_frame_pipeline_begin_frame(1u, 0u, 0u));
+    assert(t384_frame_pipeline_begin_frame(1u, 0u,
+                                           T384_CHUNK_FLAG_TPD_Y16));
     const bool ring_holds_complete_frame =
         (uint64_t)T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_CHUNK_BYTES ==
         T384_RAW16_FRAME_BYTES;
@@ -92,7 +104,8 @@ int main(void)
         produce_chunk(1u, i * T384_PIPELINE_CHUNK_BYTES, end);
     }
     if (ring_holds_complete_frame) {
-        assert(t384_frame_pipeline_begin_frame(2u, 0u, 0u));
+        assert(t384_frame_pipeline_begin_frame(2u, 0u,
+                                               T384_CHUNK_FLAG_TPD_Y16));
     }
     uint8_t *data = NULL;
     uint16_t capacity = 0u;

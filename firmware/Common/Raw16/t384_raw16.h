@@ -22,6 +22,7 @@
 #define T384_RAW16_PIXELS (T384_RAW16_WIDTH * T384_RAW16_HEIGHT)
 #define T384_RAW16_FRAME_BYTES \
     (T384_RAW16_PIXELS * T384_RAW16_BYTES_PER_PIXEL)
+#define T384_RAW16_PIXEL_BIG_ENDIAN 1u
 
 /*
  * The simulator owns this deterministic scene pattern.  Frame identity and
