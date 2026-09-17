@@ -2,11 +2,11 @@
 	"kernelName": "V3F",
 	"isMaster": true,
 	"debugOptions": {
-		"dualCoreDebug": false,
+		"dualCoreDebug": true,
 		"slaveGDBPort": 3334,
 		"masterGDBPort": 3333
 	},
-	"mate": "",
+	"mate": "../V5F",
 	"mergedOptions": {
 		"enabled": false,
 		"mergedList": {

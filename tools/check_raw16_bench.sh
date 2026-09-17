@@ -63,6 +63,15 @@ if len(matches) != 1:
 pathlib.Path(sys.argv[2]).write_text(matches[0], encoding="utf-8")
 PY
 node --check "$console_javascript"
+node "$project_root/tests/device_console_ui_smoke.cjs"
+gcc -std=c99 -Wall -Wextra -Werror -I"$firmware_root/Common/App" \
+  "$project_root/tests/dns_host_smoke.c" -o /tmp/t384-dns-smoke
+/tmp/t384-dns-smoke
+gcc "${common_flags[@]}" -ffunction-sections -fdata-sections \
+  "$project_root/tests/dhcp_network_options_smoke.c" \
+  "$firmware_root/ThirdParty/networking/dhserver.c" \
+  -Wl,--gc-sections -o /tmp/t384-dhcp-network-smoke
+/tmp/t384-dhcp-network-smoke
 
 python3 -m json.tool \
   "$firmware_root/V3F/T384-RAW16-BENCH_V3F.wvproj" >/dev/null
@@ -188,7 +197,8 @@ for tree_text in sys.argv[1:]:
 print("T384 firmware/tests complete MRS portability checks passed")
 PY
 
-gcc "${common_flags[@]}" -fsyntax-only \
+for profile in 256u 384u; do
+gcc "${common_flags[@]}" -DT384_RAW16_PROFILE="$profile" -fsyntax-only \
   "$firmware_root/Common/USB/dcd_ch32h417_usbhs.c" \
   "$firmware_root/Common/USB/usb_descriptors.c" \
   "$firmware_root/Common/App/http_status.c" \
@@ -215,6 +225,7 @@ gcc "${common_flags[@]}" -fsyntax-only \
   "$firmware_root"/ThirdParty/lwIP/src/core/ipv4/*.c \
   "$firmware_root/ThirdParty/lwIP/src/netif/ethernet.c" \
   "$firmware_root/ThirdParty/networking/dhserver.c"
+done
 
 gcc "${common_flags[@]}" \
   "$project_root/tests/descriptor_smoke.c" \
@@ -222,13 +233,15 @@ gcc "${common_flags[@]}" \
   -o "$descriptor_output"
 "$descriptor_output"
 
-gcc -std=gnu99 -DT384_RAW16_PROFILE=384u \
+for profile in 256u 384u; do
+gcc -std=gnu99 -DT384_RAW16_PROFILE="$profile" \
   -Wall -Wextra -Werror \
   -I"$firmware_root/Common/Raw16" \
   "$project_root/tests/raw16_pattern_smoke.c" \
   "$firmware_root/Common/Raw16/t384_raw16.c" \
   -o "$pattern_output"
 "$pattern_output"
+done
 
 gcc -std=gnu99 -Wall -Wextra -Werror \
   -I"$firmware_root/Common/Raw16" \
@@ -237,8 +250,9 @@ gcc -std=gnu99 -Wall -Wextra -Werror \
   -o "$product_pattern_output"
 "$product_pattern_output"
 
+for profile in 256u 384u; do
 gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK \
-  -DT384_RAW16_PROFILE=384u \
+  -DT384_RAW16_PROFILE="$profile" \
   -Wall -Wextra -Werror \
   -I"$firmware_root/Common/App" \
   -I"$firmware_root/Common/Raw16" \
@@ -248,6 +262,7 @@ gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK \
   "$firmware_root/Common/Raw16/t384_raw16_wire.c" \
   -o "$pipeline_output"
 "$pipeline_output"
+done
 
 gcc -std=gnu99 -DT384_HOST_SYNTAX_CHECK -Wall -Wextra -Werror \
   -I"$firmware_root/Common/App" \
@@ -277,6 +292,25 @@ gcc -std=gnu99 -Wall -Wextra -Werror \
   "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
   -o "$mini2_protocol_output"
 "$mini2_protocol_output"
+
+for profile in 256u 384u; do
+gcc "${common_flags[@]}" -DT384_RAW16_PROFILE="$profile" \
+  -ffunction-sections -fdata-sections \
+  "$project_root/tests/mini2_stream_init_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
+  -Wl,--gc-sections -o /tmp/t384-mini2-stream-init-smoke
+/tmp/t384-mini2-stream-init-smoke
+gcc "${common_flags[@]}" -DT384_RAW16_PROFILE="$profile" \
+  -ffunction-sections -fdata-sections \
+  "$project_root/tests/mini2_dvp_capture_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
+  "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
+  "$firmware_root/Common/Raw16/t384_raw16_roi.c" \
+  "$firmware_root/Common/Raw16/t384_raw16.c" \
+  "$firmware_root/Common/Raw16/t384_raw16_wire.c" \
+  -Wl,--gc-sections -o /tmp/t384-mini2-dvp-capture-smoke
+/tmp/t384-mini2-dvp-capture-smoke
+done
 
 gcc -std=gnu99 -Wall -Wextra -Werror \
   -I"$firmware_root/Common/Raw16" \
@@ -408,7 +442,7 @@ rg -Fq '#define T384_NCM_RX_BUDGET 8u' \
 rg -Fq 'queue_static_chunk' "$firmware_root/Common/App/http_status.c"
 rg -Fq '#define T384_FRAME_SOURCE_SIMULATOR 0' \
   "$firmware_root/Common/Raw16/t384_frame_source.h"
-rg -Fq 'mini2-dvp-y16-picture-v2' \
+rg -Fq 'mini2-dvp-y16-picture-v7' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
 rg -Fq 't384_frame_source_stream_ready' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
@@ -418,7 +452,7 @@ rg -Fq 'mini2_control_dvp30_status' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
 rg -Fq 'mini2_uart0_query(0x84u' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
-rg -Fq 'mini2_uart0_query(0x86u' \
+rg -Fq 't384_mini2_build_digital_query_command(' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
 rg -Fq 'mini2_uart0_query_info(0x01u' \
   "$firmware_root/Common/Raw16/t384_frame_source_mini2.c"
@@ -504,6 +538,20 @@ if find "$firmware_root/Common/Camera" -type f -print -quit 2>/dev/null | grep -
   echo "OV2640 source remains in RAW16 bench" >&2
   exit 1
 fi
+dualcore_selected="$(python3 - "$firmware_root/V3F/T384-RAW16-BENCH_V3F.wvproj" <<'PY'
+import json
+import sys
+project = json.load(open(sys.argv[1], encoding="utf-8"))
+defines = project["buildConfig"]["configurations"][0]["ccompiler"]["preprocessor"]["defined_symbols"]
+print(int("T384_DUALCORE=1" in defines))
+PY
+)"
+if [[ "$dualcore_selected" == 1 ]]; then
+  bash "$project_root/tools/check_dualcore_firmware.sh"
+  python3 "$project_root/tools/check_dualcore_artifacts.py"
+  echo "T384 RAW16 dual-core checks passed; board validation still required"
+  exit 0
+fi
 map_file="$firmware_root/V3F/obj/T384-RAW16-BENCH_V3F.map"
 if [[ -f "$map_file" ]] &&
    rg -q 'Common/Camera/t384_camera\.o|\.bss\.frame_slots' "$map_file"; then
@@ -531,6 +579,7 @@ if [[ -f "$map_file" ]]; then
       "$firmware_root/Common/Raw16/t384_radiometry.h" \
       "$firmware_root/Common/Raw16/t384_frame_pipeline.c" \
       "$firmware_root/Common/Raw16/t384_frame_pipeline.h" \
+      "$firmware_root/Common/Raw16/t384_frame_source.h" \
       "$firmware_root/Common/Raw16/t384_frame_source_mini2.c" \
       "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
       "$firmware_root/Common/Raw16/t384_mini2_protocol.h" \
@@ -549,12 +598,28 @@ if [[ -f "$map_file" ]]; then
       exit 1
     fi
   done
-  python3 - "$map_file" <<'PY'
+  python3 - "$map_file" "$firmware_root/Common/Raw16" <<'PY'
 import re
+import subprocess
 import sys
 
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-expected_slot_data = 0x18000
+definitions = subprocess.check_output(
+    ["gcc", "-E", "-dM", "-I" + sys.argv[2], "-I" + sys.argv[2] + "/../App",
+     "-include", "t384_product_config.h", "-"],
+    input="", text=True,
+)
+macros = dict(re.findall(r"^#define (\w+) (.+)$", definitions, re.M))
+def number(name):
+    value = macros[name]
+    return number(value) if value in macros else int(value.rstrip("uUlL"), 0)
+slot_count = number("T384_PIPELINE_SLOT_COUNT")
+expected_slot_data = (slot_count * number("T384_RAW16_WIDTH") *
+                      number("T384_RAW16_BYTES_PER_PIXEL") * number("T384_PIPELINE_CHUNK_ROWS"))
+expected_metadata = slot_count * 16
+expected_dma_sink = (2 * number("T384_RAW16_WIDTH") *
+                     number("T384_RAW16_BYTES_PER_PIXEL") *
+                     number("T384_MINI2_DMA_BLOCK_ROWS"))
 ncm = re.search(r"\.bss\.ncm_epbuf\s*\n\s*0x[0-9a-f]+\s+0x([0-9a-f]+)", text, re.I)
 if not ncm or int(ncm.group(1), 16) != 0xD010:
     actual = ncm.group(1) if ncm else "missing"
@@ -564,9 +629,15 @@ if not payload or int(payload.group(1), 16) != expected_slot_data:
     actual = payload.group(1) if payload else "missing"
     raise SystemExit(f"unexpected RAW16 slot_data size 0x{actual}; expected 0x{expected_slot_data:X}")
 metadata = re.search(r"\.bss\.slots\s+0x[0-9a-f]+\s+0x([0-9a-f]+)", text, re.I)
-if not metadata or int(metadata.group(1), 16) != 0x180:
+if not metadata or int(metadata.group(1), 16) != expected_metadata:
     actual = metadata.group(1) if metadata else "missing"
-    raise SystemExit(f"unexpected RAW16 slot metadata size 0x{actual}; expected 0x180")
+    raise SystemExit(f"unexpected RAW16 slot metadata size 0x{actual}; expected 0x{expected_metadata:X}")
+dma_sink = re.search(r"\.bss\.dvp_row_sink\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)", text, re.I)
+if not dma_sink or int(dma_sink.group(2), 16) != expected_dma_sink:
+    actual = dma_sink.group(2) if dma_sink else "missing"
+    raise SystemExit(f"unexpected DVP DMA sink size 0x{actual}; expected 0x{expected_dma_sink:X}")
+if int(dma_sink.group(1), 16) % 32:
+    raise SystemExit("DVP DMA sink is not 32-byte aligned")
 ebss = re.search(r"0x([0-9a-f]+)\s+PROVIDE \(_ebss = \.\)", text, re.I)
 if not ebss:
     raise SystemExit("missing _ebss in RAW16 bench map")
@@ -574,7 +645,7 @@ stack_origin = 0x2017F800
 margin = stack_origin - int(ebss.group(1), 16)
 if margin < 0x8000:
     raise SystemExit(f"RAW16 pipeline RAM margin before stack is only 0x{margin:X}; need at least 32KiB")
-print(f"RAW16 bench map config passed: ncm_epbuf=0xD010, slot_data=0x{expected_slot_data:X}, metadata=0x180, pre-stack margin=0x{margin:X}")
+print(f"RAW16 bench map config passed: profile={number('T384_RAW16_PROFILE')}, ncm_epbuf=0xD010, slot_data=0x{expected_slot_data:X}, metadata=0x{expected_metadata:X}, dma_sink=0x{expected_dma_sink:X}, pre-stack margin=0x{margin:X}")
 PY
 fi
 

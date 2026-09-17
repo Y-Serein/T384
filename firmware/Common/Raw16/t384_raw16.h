@@ -6,7 +6,7 @@
 
 /* Change this single selector for a product build. */
 #ifndef T384_RAW16_PROFILE
-#define T384_RAW16_PROFILE 256u
+#define T384_RAW16_PROFILE 384u
 #endif
 
 #if T384_RAW16_PROFILE == 256u

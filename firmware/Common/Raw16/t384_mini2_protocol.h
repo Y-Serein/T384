@@ -8,6 +8,8 @@
 #define T384_MINI2_DVP30_COMMAND_BYTES 23u
 #define T384_MINI2_GENERIC_ACK_BYTES 9u
 #define T384_MINI2_MAX_RESPONSE_BYTES 48u
+/* Current OEM SDK 0x86 getter: status, format, FPS (no fourth padding byte). */
+#define T384_MINI2_DIGITAL_RESPONSE_BYTES 3u
 
 #define T384_MINI2_FILE_NAME_BYTES 256u
 #define T384_MINI2_FILE_OPEN_BYTES 279u
@@ -39,6 +41,8 @@ void t384_mini2_build_query_command(
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES],
     uint8_t command_index,
     uint8_t response_data_length);
+void t384_mini2_build_digital_query_command(
+    uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES]);
 void t384_mini2_build_class_query_command(
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES],
     uint8_t command_class,

@@ -161,7 +161,7 @@ def capture(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default="http://192.168.18.1/raw16.stream")
+    parser.add_argument("--url", default="http://192.168.17.1/raw16.stream")
     parser.add_argument("--diag-url")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--setpoint-c", type=float, required=True)

@@ -9,10 +9,15 @@ MEMORY
 {
 	/*FLASH, RAM, and RAM-CODE can be freely configured according to project 
 	requirements;Please refer to the datasheet manual for specific allocation*/
-	FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 192K     /* zero_wait flah ,and loaded into RAM_CODE for running */
-	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 192K  /* RAM for running code*/
-	RAM (xrw) : ORIGIN = 0x20130000+256, LENGTH = (320K-256)     /* RAM for .data .bss section and other*/
-  	RAM_LOAD (xrw) : ORIGIN = 0x20130000, LENGTH = 256         /* RAM for .load section*/
+	FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 184K     /* zero_wait flah ,and loaded into RAM_CODE for running */
+	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 150K  /* RAM for running code*/
+	RAM (xrw) : ORIGIN = 0x20130000+256, LENGTH = (243K+768)     /* RAM for .data .bss section and other*/
+  	DMA_SHARED (xrw) : ORIGIN = 0x2017C000, LENGTH = 12K
+    FRAME1_CODE (xrw) : ORIGIN = 0x20125800, LENGTH = 42K
+    FRAME1_DATA (xrw) : ORIGIN = 0x2016D000, LENGTH = 60K
+    IPC (xrw) : ORIGIN = 0x2017F000, LENGTH = 1K
+    STACK_RAM (xrw) : ORIGIN = 0x2017F800, LENGTH = 2K
+    RAM_LOAD (xrw) : ORIGIN = 0x20130000, LENGTH = 256         /* RAM for .load section*/
 }
 
 SECTIONS
@@ -194,15 +199,28 @@ SECTIONS
 	PROVIDE( _end = _ebss);
 	PROVIDE( end = . );
 
-    .stack ORIGIN(RAM) + LENGTH(RAM) - __stack_size :
+    .stack ORIGIN(STACK_RAM) :
     {
-        PROVIDE( _heap_end = . );    
+        PROVIDE( _heap_end = ORIGIN(RAM) + LENGTH(RAM) );    
         . = ALIGN(4);
         PROVIDE(_susrstack = . );
         . = . + __stack_size;
         PROVIDE( _eusrstack = .);
-    } >RAM 
+    } >STACK_RAM 
 
+
+    .t384_dma (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_dma)) } >DMA_SHARED
+    .t384_ipc (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_ipc)) } >IPC
+    .t384_frame1_code (NOLOAD) : { . += LENGTH(FRAME1_CODE); } >FRAME1_CODE
+    .t384_frame1_data (NOLOAD) : { . += LENGTH(FRAME1_DATA); } >FRAME1_DATA
+    PROVIDE(t384_dualcore_frame = 0x200C0300);
+    PROVIDE(t384_frame1_itcm = 0x200A8000);
+    PROVIDE(t384_frame1_dtcm = 0x200FB000);
+    PROVIDE(t384_frame1_code = 0x20125800);
+    PROVIDE(t384_frame1_data = 0x2016D000);
+    ASSERT(SIZEOF(.t384_ipc) <= 1024, "IPC exceeds 1 KiB")
+    ASSERT(_heap_end == 0x2016D000, "V3F heap must stop before secondary frame")
+    ASSERT(_ebss + 32768 <= ORIGIN(RAM) + LENGTH(RAM), "V3F needs 32 KiB heap margin")
 }
 
 

@@ -116,6 +116,13 @@ void t384_mini2_build_query_command(
         command, 0x10u, command_index, 0u, response_data_length);
 }
 
+void t384_mini2_build_digital_query_command(
+    uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES])
+{
+    t384_mini2_build_query_command(command, 0x86u,
+                                  T384_MINI2_DIGITAL_RESPONSE_BYTES);
+}
+
 void t384_mini2_build_class_query_command(
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES],
     uint8_t command_class,

@@ -90,13 +90,16 @@ static uint32_t slot_addr(unsigned i) { return i ? T384_CAL_STORAGE_SLOT1_ADDR :
 
 t384_cal_status_t t384_cal_storage_init(void)
 {
-    t384_cal_manifest_t best, m; uint8_t payload[T384_CAL_STORAGE_MAX_PAYLOAD]; int found=0;
+    if (g_staging_valid) return T384_CAL_BUSY;
+    /* Boot-time scratch reuses the idle staging buffer instead of a 2 KiB
+     * local array, which alone would exhaust the V3F stack budget. */
+    t384_cal_manifest_t best, m; int found=0;
     memset(&best,0,sizeof(best));
     for (unsigned i=0;i<SLOT_COUNT;i++) {
         if (t384_cal_flash_read(slot_addr(i), &m, sizeof(m)) != 0 || !valid_manifest(&m)) continue;
-        if (t384_cal_flash_read(slot_addr(i)+sizeof(m), payload, m.payload_len) != 0 ||
-            t384_cal_crc32(payload,m.payload_len) != m.payload_crc32) continue;
-        if (!found || m.generation > best.generation) { best=m; memcpy(g_payload,payload,m.payload_len); found=1; }
+        if (t384_cal_flash_read(slot_addr(i)+sizeof(m), g_staging_payload, m.payload_len) != 0 ||
+            t384_cal_crc32(g_staging_payload,m.payload_len) != m.payload_crc32) continue;
+        if (!found || m.generation > best.generation) { best=m; memcpy(g_payload,g_staging_payload,m.payload_len); found=1; }
     }
     if (!found) { memset(&g_active,0,sizeof(g_active)); return T384_CAL_NO_VALID; }
     g_active=best; return T384_CAL_OK;

@@ -1,6 +1,8 @@
 #include "t384_module_files.h"
 #include "t384_mini2_protocol.h"
 
+#if !T384_DUALCORE || defined(Core_V5F)
+
 #include <stdio.h>
 #include <string.h>
 
@@ -324,3 +326,4 @@ void t384_module_files_download_release(bool complete)
     if (!complete) status.error = CANCELLED;
     release();
 }
+#endif

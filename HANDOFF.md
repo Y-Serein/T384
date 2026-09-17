@@ -1,6 +1,165 @@
-# T384 当前交接（2026-09-15）
+# T384 当前交接（2026-09-17）
 
-## 30 秒恢复：暂停，等WN2384T到货再继续
+## 30秒恢复：最新优化固件用户实测约29FPS；工作暂停，持续稳定性待验收
+
+### 当前状态
+
+- 最新指令：用户要求“你的工作暂停，我去测试”。代理已暂停主动采集和固件修改；本次仅按用户要求更新HANDOFF。不要自行恢复测速、再次要求下载或占用唯一RAW16流，等待用户测试反馈或明确恢复指令。
+- 最新反馈：“实测29帧了最新固件”。用户已确认使用最新TCP对齐读取优化固件，约29FPS，超过≥25FPS速率目标；尚无代理对该版的60秒完整帧/跳号/CRC报告或10分钟及重连验收，不能写成完整稳定流程已完成。
+- B方案固定为V5F采集/V3F网络。优化前双帧v2已确认身份/五段自检，Windows60秒19.567FPS；该成绩是优化前基线，不能作为当前29FPS版的测速结果。
+- 用户USB重插后网络恢复，Windows读取双帧身份、两核boot/init及五段访问自检均1。并发每2秒diag的单流运行约83设备发送帧后读超时，诊断仍响应；source约30FPS、HTTP输出约20FPS，TCP背压增长，NCM TX背压/drop为0。不能认定源或NCM容量为瓶颈。
+- 不并发diag的Windows原生60秒严格工具：1174完整帧/19.567FPS/4.328MB/s，跳号626、逆序0、不完整帧0，测试因吞吐与跳号退出1；未满足≥25FPS。日志/tmp/t384-double-no-diag.log。用户页面约20FPS得到独立实测支持。
+- 新版源身份mini2-dvp-v5f-double-frame-v2，IPC版本2、frame_banks=2；第二帧216KiB分为ITCM96、DTCM18、共享代码42、共享数据60KiB。两核map IPC944B，V3F堆余35176B、V5F16556B，Merge.bin218544B。启动必须验证全部五段访问成功；不能混用旧单帧核。
+- 前两处HTTP修复已用户下载并实测：关闭前隔离旧PCB回调，静态页面按发送窗口持续补充。Windows60秒601完整帧/10.003FPS、最长间隔131ms、半帧/逆序0、诊断无错误，3次重连恢复82–88ms。该历史成绩只证明当时稳定性要求，不满足新≥25FPS要求。
+- 未commit/push/发布/自动烧录，保留用户已有未提交改动。保持Erase All/Clear CodeFlash关闭；合并BIN含FF空洞，标定槽实际保留尚未验证。
+
+### 已尝试及结果
+
+- bash tools/check_dualcore_firmware.sh：双规格实际DVP ISR/真实pipeline、101帧消费与采集交错、慢消费完整帧丢弃、短帧不破坏另一个读租约、序号回绕、scratch互斥、384 ASan/UBSan及跨核RPC通过。LeakSanitizer关闭。
+- tools/build_dualcore.ps1：实际MRS WCH GCC12.2.0两核目标Build、HEX合并与产物检查通过。bash tools/check_raw16_bench.sh完整日志通过；python3 tools/check_dualcore_artifacts.py通过。
+- 双帧并发诊断测速退出1，报告out/stability/after-double-frame-windows.json的stable=false、windows为空；最后有效活动诊断累计stream.frames=83，随后读超时。不能用该报告计算60秒FPS；有效60秒结果来自不并发diag的严格工具日志。
+- 最新优化的完整回归bash tools/check_raw16_bench.sh已结束，日志/tmp/t384-aligned-copy-full.log最终显示RAW16双核检查通过；目标构建日志/tmp/t384-aligned-copy-target.log。此前“仍运行中”已过时。
+- TCP融合copy/checksum优化只加入已验证的源4字节对齐提示，保留alias-safe memcpy及非对齐目标写入；多对齐/长度lwIP参考对照及ASan/UBSan通过，HTTP回归通过。实际新汇编每8字节源读取由8次lbu改为2次lw；WCH两核构建/合并检查通过，IPC和堆余不变。diag新增http.checksum_aligned_reads=1。用户随后确认最新固件约29FPS；相比优化前19.567FPS基线有明显改善，但用户短时速率与代理严格完整帧验收口径不同，持续稳定性仍待验证。
+
+### 下一步（用户恢复工作后执行）
+
+1. 用户已确认最新优化固件约29FPS，不再要求重复下载；等待用户明确恢复指令，暂停期间不访问设备或占用用户测试流。
+2. 获准恢复且用户测试结束后，读取diag确认http.checksum_aligned_reads=1、双帧身份、两核boot/init和五段自检1。仅允许一条RAW16流；确需关闭页面时提供http://192.168.17.1/完整链接。
+3. Windows原生60秒完整帧验收≥25FPS/≥5529600B/s，并记录跳号、半帧/CRC/逆序、源丢弃、HTTP超时/写错误和NCM TX drop；并发diag若复现超时，另测不并发diag以定位，不能降低门槛。
+4. ≥25FPS通过后再测10分钟+10次重连；未通过则根据活动差分只选一个变量，禁止无证据扩大TCP/NCM缓冲或改变线上协议。
+
+### 关键相对路径
+
+- firmware/Common/App/http_status.c、tests/module_files_http_smoke.c、tools/check_module_files.sh：TCP关闭与静态页面回归。
+- firmware/Common/Raw16/t384_frame_pipeline_full.c、t384_dualcore.{h,c}、t384_frame_source_remote.c：双帧/跨核访问。
+- firmware/Common/Ld/{V3F,V5F}/、firmware/README.md：内存分区账本。
+- tools/build_dualcore.ps1、tools/merge_dualcore_hex.py、tools/check_dualcore_artifacts.py、firmware/V5F/obj/Merge.bin：双核目标构建和下载产物，实际Windows路径C:\Serein_Y\Sipeed\T384\firmware\V5F\obj\Merge.bin。
+- firmware/Common/App/arch/cc.h：最新TCP对齐源读取优化；诊断身份http.checksum_aligned_reads=1。
+- tools/t384_stream_stability.py、out/stability/after-double-frame-windows.json、out/stability/after-static-refill-windows.json：当前失败和历史实测证据。
+
+### 验证状态
+
+双帧v2主机/目标构建/用户下载及五段自检通过，Windows60秒19.567FPS，完整帧≥25FPS未达成。源对齐读取优化主机对照/ASan/UBSan/HTTP回归及两核目标构建通过，最新完整RAW16回归日志已通过；用户已确认最新优化固件实测约29FPS，尚无代理优化后严格完整帧或持续稳定性报告。先前单帧HTTP修复Windows60秒及3次重连通过但仅10FPS。用户速率反馈已超过25FPS；代理≥25完整FPS/10分钟及重连验收尚未完成。
+
+### 未决问题
+
+USB重插前不可达原因、29FPS版的完整帧/跳号/持续稳定性、并发诊断时流超时是否消失、完整帧跳号及源丢弃、运行时栈、实际下载保留标定槽、手机/其他PC系统、24小时和正式测温均未验证。
+
+---
+
+## 历史：v6已收满但随后停顿；v7模组侧恢复待Build/上板
+
+### 30 秒恢复（历史背景）
+
+### 当前状态
+
+- 用户反馈0/0 FPS、发布0、故障55，明确已整机USB断电重连。只读诊断确认实机v6/8行6144B/10槽，55帧均288行/221184B、ROI valid1，但无空槽55次、全部abort；源计数后续仍55，接收器重启71→209、CR0=67/CR1=1，FIFO/NCM drop/backpressure0。3秒单流收到HTTP头但无完整帧。v6改善块/行计数，未恢复持续成像；不能把55次无槽直接归因活动HTTP吞吐，可能属于启动无消费者窗口。
+- 当前诊断数字1/1/30、TPD1是启动采样，停顿后未重新查模组，不能证明此时仍启流；本地DVP重启已实机证实不足。停止继续猜采样沿、USB身份或温度公式。
+- v7仅384增加故障态恢复：停止本地DMA后有界读0x86三字节与0x85模式；有效回执且模式与最后确认域一致才重发现有易失0x46启流，至少4秒写入间隔。pending阶段只读等待应用，后续真实输出/模式确认才启DMA，不以ACK放行，丢ACK亦用回读判定；模式错/通信失败不写更多命令。正常持续输入及读表期间不触发，256保持原本地恢复路径。
+- 无探测器/模式/保存/标定写入，USB/网络/私有帧格式及73728B采集数据预算不改。新增dvp.module_probes/module_rearms/restart_ifr，故障期间旧数字/模式字段实时刷新。一次故障探测最坏约1.5秒UART等待，可短暂影响HTTP响应；正常持续输入无此等待。
+- 11:51:04 v6 map：slot_data0xF000、metadata0xA0、DMA0x3000/32B对齐，_ebss=0x20176EA8，栈前余量35160B。晚于v6源码但早于v7，不能放行v7下载；v7未目标编译、未烧录/上板，真实384出图及标定未完成。
+
+### 已尝试及结果
+
+- 两次GET17.1诊断成功并差分证明源仍55/重启持续增加；`python3 tools/t384_raw16_bench.py --url http://192.168.17.1/raw16.stream --duration 3 --warmup 0 --timeout 3 --expect-source real`退出2超时，无完整帧，没有新控制写入设备。
+- `bash tools/check_raw16_bench.sh`双规格严格语法/各21初始化场景及全部既有UI/网络/SDK/采集/标定模拟/代理回归通过，新增384活状态恢复7场景通过，最终旧map门禁退出1。独立UART夹具亦通过，包括丢ACK、错误模式/格式/FPS、pending不重复写与写入退避；无持久化/探测器/模式设置。
+- 随后扩展的最新采集夹具执行产品任务+UART+ISR+真实队列，384 ASan/UBSan通过：停顿→重发→后续确认→真实完整帧逐字节消费，以及超时/读表互斥、错模式fail-closed；LeakSanitizer沿用环境限制关闭，未验证泄漏。新增夹具软件行为不证明实机源停顿成因。
+- 诊断按当前字段上界估算5940B含NUL<5952B；Shell语法与其它相关diff检查通过，ISR既有尾空白保留。未自动生成目标固件、烧录、commit/push/发布。
+
+### 下一步
+
+1. 用户MRS增量Build正式V3F的v7，代理核对新map/HEX时间、v7身份、DMA/队列大小/对齐、栈前余量≥32768B；不能下载11:51:04 v6旧HEX。
+2. 新产物放行后用户只下载V3F，禁Erase All/Clear CodeFlash；无需继续排查“是否仅MCU复位”，用户已确认整机断电。当前HTTP入口[成像页](http://192.168.17.1/)及[诊断页](http://192.168.17.1/diag)可读，图像未恢复。
+3. 单流验证v7模块探测/启流计数、故障期间实时数字/模式、restart_ifr，以及实际连续288行/221184B完整帧；若实时1/1/30及TPD1确认仍无DVP事件，需实际PCLK/H/V输入及IRQ证据，不继续无证据改寄存器。
+4. 连续出图后核对字节序和该384自己的数据域/标定；v6 LE中心标准差8.97count、BE2296.54count是字节序候选证据，不单凭平坦场景静默改线上格式，更不套用WN2256公式。标定保存/回读/应用另行实机验收。
+
+### 关键路径与未决
+
+- `firmware/Common/Raw16/t384_frame_source_mini2.c`：fault-only状态确认/启流；`firmware/Common/App/t384_product_config.h`：500ms本地恢复、4秒模块写入退避；`tests/mini2_stream_init_smoke.c`与`tests/mini2_dvp_capture_smoke.c`：实际控制/采集回归；`tools/check_raw16_bench.sh`：严格检查/map门禁。
+- 未决：55帧后模组真实输出状态、源停顿物理成因、v7持续出图、新RAM与运行时栈、字节序/成像质量、手机浏览器与正式标定。下面v5/v6内容均为历史，不作为当前下载或完成依据。
+
+## 历史：v5控制已通过，384完整帧0；v6采集修复待Build/上板
+
+### 当前状态
+
+- 实机v5（PN=WN2384，FW=00.00.07.01）已确认数字输出enabled1/format1/fps30、TPD模式1、stream_ready1，UART timeout/bad0；探测器60 Hz和DVP30 FPS分离配置不再阻塞启流。
+- 真实采集仍失败：source.frames54/published0/drop54，最后279行/214272B而非288行/221184B；12槽满、acquire_no_slot54、pipeline完成0，FIFO/NCM drop为0，源计数随后停止。3秒只读单流收到HTTP头但无分块/完整帧。逐行IRQ遗漏/中断抢占消费者是待实测解释，不作为已证明硬件根因。
+- 源码v6只384启用WCH RM V1.6第29章固定长度DMA接收：每8行/6144B完成一次，按硬件BUF_TOG选完成块，用VSYNC结束验证全帧，不进行JPEG编码、不改变Y16/私有帧流。10×6144B队列加2×6144B DMA暂存，总数据预算73728B；256逐行路径保留，单一全局规格选择仍有效。
+- 500ms无DVP事件仅重启MCU接收器，记录dvp.restarts/restart_cr0/restart_cr1；先停止DMA再终止当前帧，读表期间不重启，不新增模组命令。超长帧先abort再复制，短帧/FIFO/无空槽仍严格拒绝，不靠发布半帧恢复画面。
+- v6未目标编译、未烧录、未上板验证；当前map/HEX旧，不能放行。末次curl只读访问17.1在沙箱内及授权沙箱外均5秒超时，不能当设备仍可访问。无浏览器可执行文件，不声称看过实际画面/截图；真实标定保存/回读/应用及温度精度未完成。
+
+### 已尝试及结果
+
+- `bash tools/check_raw16_bench.sh`：256/384严格语法、各21初始化场景、真实ISR/队列/ROI/envelope采集夹具、既有UI/网络/SDK协议/黑体采集/标定模拟/只读代理回归均通过，最终旧map时间门禁退出1。首轮诊断格式实参错位被-Werror捕获，修正后完整重跑通过软件部分。
+- 采集夹具执行实际产品ISR，仅mock MMIO，覆盖3帧完整字节、消费停顿边界、短帧后bank重同步、超长帧复制前拒绝、FIFO拒绝、DVP停顿重启后完整下一帧及读表保护，两规格通过。
+- 384 AddressSanitizer/UBSan采集测试通过；首次LeakSanitizer因ptrace环境不支持退出1，设置detect_leaks=0后通过，不宣称泄漏检查通过。map阶段独立双规格尺寸/32B对齐/32KiB边界夹具通过，不替代目标map；诊断按实际字段上界估算5855B含NUL<5952B。
+- Shell语法及其它相关文件diff检查通过；ISR文件diff检查仍报用户既有尾空白，未清理或覆盖，保留其它未提交改动。恢复逻辑额外保护主任务/ISR时间竞争，避免无符号时间差误触发本地重启；对应采集夹具通过。未commit/push/发布，不生成或下载生产固件。
+
+### 下一步
+
+1. 用户MRS增量Build `firmware/T384-RAW16-BENCH.wvsln` 的V3F，不需Clean；代理检查新map/HEX时间及source.kind=v6、slot_data0xF000/metadata0xA0/dvp_row_sink0x3000且32B对齐、栈前余量≥32768B。
+2. 新产物放行后由用户只下载V3F，禁Erase All/Clear CodeFlash。新固件预计入口[成像页](http://192.168.17.1/)及[诊断页](http://192.168.17.1/diag)，当前末次请求超时。
+3. 代理复验v6/8行6144B/10槽、数字1/1/30及TPD1；单流验证真实完整帧288行/221184B、持续源/发布/流计数和错误。重启计数持续增加则仍未恢复，需实际PCLK/H/V及停顿前CR0/CR1证据，不宣布解决。
+4. 完整成像通过后再用该384自己的数据闭环标定，不套用WN2256公式/表；原厂测温型号、数据域及保存/回读/应用仍需验证。
+
+### 关键路径与未决
+
+- `firmware/Common/Raw16/t384_raw16.h`：唯一全局选择；`firmware/Common/App/t384_product_config.h`：DMA块/帧率；`firmware/Common/Raw16/t384_frame_source_mini2.c`：真实采集/恢复；`tests/mini2_dvp_capture_smoke.c`：新增实际ISR回归；`tools/check_raw16_bench.sh`：双规格及map门禁。
+- 未决：真实384新路径完整出图、物理时序/电平和源停顿原因、新目标RAM余量、持续吞吐、浏览器与手机兼容性、真实384测温/标定。下面v2-v5内容均为历史，不作为当前下载放行依据。
+
+## 历史：v4已烧录仍0流，v5启动确认窗口待验证
+
+### 当前状态
+
+- 本轮最新真实设备已为mini2-dvp-y16-picture-v4，digital_query_bytes=3；重复读取源计数仍124、数字输出0/0/0，TPD命令未发、stream_ready=0。v4长度修正不足以恢复出图，60 FPS为旧采样值而非当前连续源帧。UART timeout/bad=0、NCM TX drop=0，没有吞吐瓶颈证据。
+- 新发现代码确认缺口：三个有效旧状态回读连续执行，没有任何应用等待。v5仅对数字输出确认增加2秒窗口/50ms轮询，通信连续失败3次停止，严格enabled/format/fps及TPD模式护栏保留；这是软件恢复策略，不证明模组实际延迟或2秒原厂保证。新增独立500ms延迟状态和永久关闭测试。SDK示例区分成像型adv_digital_video_output_set与测温型basic_preview_start，但设备PN=WN2384不等同确认WN2384T，未换命令族或发送4D/8D。
+- 最新真实复验：用户已烧录v3，17.1可访问；UART timeout/bad均0，DVP设置ACK成功、native60切换已跳过，但连续0x86回读enabled/format/fps均0，流程提前退出，TPD命令尚未发送，流仍503。此前“主机通过”没有解决真实384出图；不能继续把v3当成可用成像固件。
+- 查本地原厂SDK真实回调找到确定报文差异：adv_digital_video_output_get要求0x86长度3，旧表/代码请求4。v4已统一启动与确认阶段为3字节，专用构造函数和digital_query_bytes诊断防止再次分叉；保留严格输出/模式回读，不绕过护栏。新增tests/mini2_video_sdk_vectors.py对照SDK设置/查询（含0x86、0x85）的实际报文/CRC，假UART也独立要求3，不再复制原有4字节假设。软件修复未上板验证，不能提前认定查询长度修复足以恢复完整出图。
+- 本轮直接读到source.frames=124且随后复查仍124，而NCM计数增加；source.fps_x1000=60000是旧采样值，不能写成持续有效60 FPS。网络曾短暂拒绝连接后恢复，当前仍v3。真实流、数据域、384标定未闭环。
+- 历史v2诊断：PN=WN2384、FW=00.00.07.01，探测器60 Hz；每帧288行/221184B、FIFO溢出0，但模式未知、全部丢弃、流503。首个超时为探测器切30，之后模式设置无回执；不能认定30不支持或切帧率必然重启。
+- 上一轮v3分离探测器60/DVP30，原生帧率匹配时不发0x44，256仍50/50；增加有界等待和输出/模式回读。本轮v3已证实UART超时消失，但新增回读门槛显露旧0x86长度定义问题，不能再提示v3能出图。
+- 旧键mini2.control_detector30_status保留，值4=未发送；没有改变USB/电平/DMA队列/私有帧流/温度公式，没有新增产品静态缓冲。历史10:24:56 v3 MRS产物晚于上一轮输入，map余量33592B、HEX校验均通过，用户已烧录但成像复验失败。当前v4源码晚于该产物，必须重新Build；384测温能力、数据域与标定仍未验证。
+- 前一轮按照 `docs/design/SIPEED_THERMAL_USB_NCM_HTTP_PROTOCOL_V1.md` 迁移网络并完善UI；用户明确确认保留现有私有帧流。默认改为192.168.17.1/24、DHCP .17.2–.20、Router/DNS为设备、本地ir.sipeed.com解析和常见Captive Portal路径302到字面IP；设备上游gateway仍0，不做NAT。USB描述符/VID/PID未改，正式USB身份未冻结；ROM MAC无效时CHIPID回退不能证明多设备唯一性。
+- 正式网页 `web/raw16_bench_console.html` 增加触摸/鼠标ROI、键盘可用中心区域/清除、全图H/L坐标叠加、5×5中心平均、ROI平均、四种色板选择和PNG保存；原始完整帧的浏览器副本防止下一帧分块污染交互统计。设备页检测实际能力，明确禁用网页升级；384无模型仅标记Y16极值，Picture禁用测温/原始统计。
+- 网段持久化/恢复及安全OTA后端尚未接入，统一120B metadata/frame API仍未迁移，不宣称完整协议合规。新增GET network、device明确configurable=false/ota.supported=false；默认采集/读表/Windows入口改17，旧固件18访问需区别。用户纠正参考目录为 `~/dev/pico_tn160`，当前 `/home/yserein/dev/pico_tn160` 及 `/home/slam/dev/pico_tn160` 均不存在，尚未完成TN160源码对照。
+- 用户确认384已到货，要求接上后能出图和标定，并保留单一全局宏切回256。此前采购目标为WN2384T，实际诊断PN为WN2384；测温/内置标定支持仍需具体FW与数据证据，不把分辨率等同具体测温型号。
+- 正式 `firmware/Common/Raw16/t384_raw16.h` 默认为 `384u`：384×288、每行768B、探测器60 Hz/DVP输出30 FPS配置、6144B/chunk、12槽。改为 `256u` 并重新Build/烧录可回到256×192/50FPS；这是编译选择，不能在已烧录固件中热切换。全量384 RAW16 60 FPS需要13.27MB/s，尚未验证，不通过跳帧宣称60 FPS。
+- 当前只完成软件准备。384真实DVP、完整出图、原厂表、黑体标定、保存/回读/应用均未上板验证；384温度模型保持不可用，不能套用WN2256公式/表。
+- 用户已MRS Build：2026-09-16 22:16:53的新map确认384，但栈前余量30008B，小于32768B门槛，尚未放行烧录。随后收紧HTTP标定缓冲释放3840B、移除启动标定读取的2KiB局部数组，并修复标定API路径比较及manifest同缓冲编码；这些更新需再次增量Build。
+- 2026-09-17 09:02:27 map已刷新，`_ebss=0x201773c8`，栈前余量33848B，标定缓冲0x800/0x900，先前RAM修复已生效；但早于本轮网络/UI源码，不能作为最新下载放行依据。
+- 现有相邻桌面Scope解析与实验二点采集支持384尺寸；本轮只读检查，没有修改或构建该工程。原厂SDK文档支持WN2384T内置两点，当前T384固件未接入该动作。实验模型与原厂标定必须分开报告。
+
+### 已尝试及结果
+
+- 当前v5：独立256/384各21初始化场景通过，新增500ms状态延迟成功/永久关闭有界拒绝。完整bash tools/check_raw16_bench.sh双规格严格语法及既有全部smoke通过，最后因11:10:43 v4 map早于新配置退出1；Shell语法/本轮配置脚本和文档差异检查通过。v5未MRS构建/上板，延迟确认是否解释实际故障未知；保留所有用户已有改动。
+- 当前v4：`bash tools/check_module_files.sh`退出0，新增原厂SDK视频setter/getter实际报文对照通过（0x86长度3）。最终 `bash tools/check_raw16_bench.sh` 双规格严格语法、各19初始化场景/短文本保护/原厂SDK契约及既有全部smoke通过，最后因旧v3 map时间门禁退出1。首轮全工程语法发现http_status.c缺协议常量头文件，补齐后重跑通过；Shell语法及本轮其他文件diff检查通过，用户已有ISR尾空白保留。现有10:24:56 HEX仍v3，代理未生成/烧录v4。
+- 原厂串口V0.4 sheet2行70/71/92/93及SDK枚举确认384支持30/60 Hz；离线SDK回调核对0x44与0x46的30/60参数/CRC均匹配，无硬件I/O。新增真实初始化代码+假UART/时钟19场景双规格回归，并保护短文本身份查询。首次主机汇编遇到vendor fence.i，仅测试夹具stub中断禁用后通过；诊断容量粗估每字符串65B断言超限，按实际字段上界复核5773B<5952B，无须扩RAM。
+- 最终复跑 `bash tools/check_raw16_bench.sh` 双规格全部主机语法/初始化19场景/文本身份保护/既有smoke通过，最后旧map时间门禁退出1；随即检测到10:24:56新产物，单独执行原脚本map阶段（含全部输入mtime）退出0，profile384/12槽/73728B/metadata192B/NCM0xD010，_ebss=0x201774c8，栈前余量0x8338=33592B。ELF字符串和HEX校验/新身份检查通过。`bash -n`通过；差异检查仍发现用户原有ISR尾空白，未清理或覆盖该格式改动。修复上板未运行。
+- 最新 `bash tools/check_raw16_bench.sh` 双规格主机严格语法、UI/DNS及全部既有smoke通过，最后map过期退出1。`bash tools/check_module_files.sh`退出0；独立DHCP真实OFFER/ACK函数选项字节、DNS A/AAAA/EDNS/NXDOMAIN/边界和UI 256/384原始数据/ROI/触摸事件/模型保护检查通过。初次完整检查运行期间脚本有修改，出现语法错误；固定后 `bash -n` 与完整重跑不再复现。独立完整帧Python首次漏传脚本参数报IndexError，补齐正确参数后通过。
+- Playwright运行包可读取，但Chromium/WebKit可执行文件不存在，未运行真实浏览器/截图；不自动安装。UI测试为VM DOM/canvas夹具，不替代Safari/Chrome真机。未上板/烧录/Flash写入。
+- 修复两个确定遗漏：黑体采集在384尺寸下被旧WN2256实验温度头拒绝；批量/Windows读表入口强制旧WN2256 PN/FW/SHA。主机bench与采集现在按HTTP头支持256/384；读表默认保留当前身份/CRC保护，旧SHA首验改为显式选项。
+- `tools/check_raw16_bench.sh` 补双规格目标源码主机语法及pattern/pipeline检查，map尺寸按当前全局规格派生，32KiB栈前余量门槛保留。
+- 256/384 Y16/Picture协商与完整帧、384拒绝旧公式、读表普通/显式旧SHA及首验失败停止回归通过；map两规格尺寸与32KiB边界夹具检查通过，夹具不能证明目标RAM。
+- 本轮 `bash tools/check_raw16_bench.sh` 双规格主机语法及全部smoke通过，整体退出1：map早于最新http_status.c，需要再次MRS增量Build。新增384黑体采集集成夹具通过：保存221184B帧，中心ROI=(184,136)。Windows PowerShell只解析操作脚本语法通过，未执行设备操作。
+- 新map `_ebss=0x201782c8`、固定栈起点 `0x2017f800`，栈前余量30008B，32KiB门禁实查退出1。最新缓冲修改预计增至33848B，估算不能替代重新链接的map；不能降低门槛。
+- `bash tools/check_module_files.sh`退出0；新增真实HTTP处理函数配合假TCP/RAM Flash的384最大payload上传、commit、manifest、启动回读检查通过。修复原API路径长度多比较1字符造成404、manifest输入输出缓冲重叠；不改变API路径/格式，未实写硬件Flash。
+- 两次只读请求 `http://192.168.18.1/diag` 均连接超时（curl退出28），没有获得新模组身份或实时帧。`docs/logs.txt`当前是相邻Scope Qt构建错误，不是384上板日志。
+
+### 下一步
+
+1. 用户MRS增量Build正式V3F的v5（只改源码，无需Clean）；代理核对新map/HEX新鲜度及32KiB余量。当前11:10:43产物属于已上板失败的v4，不得当作v5重新下载。代理不烧录或写标定。
+2. 新产物通过后用户只下载V3F，禁Erase All/Clear CodeFlash，再对USB供电模组断电重连。入口http://192.168.17.1/当前v4可读；不迁移网段或改USB身份。
+3. 代理复查source.kind=v5、digital_query_bytes=3、digital enabled1/format1/fps30、TPD设置与模式1、stream_ready=1。再检查实际持续源计数、288行/221184B完整图像及pipeline水位；若等待窗口后仍回读0，延迟生效假设未获支持，需真实UART响应/具体型号启流协议证据，不继续猜延时或绕过护栏。
+4. 标定使用新384自己的数据：核实原厂表/gain/Vtemp/FFC与数据域，完成黑体采集、模型/表身份绑定、保存/回读/应用及独立温度点。现有Scope实验0/50°C流程不能宣称OEM或-20～150°C精度；内置标定命令与写入语义需具体PN/FW证据。
+5. 挂载真实TN160参考工程、完成浏览器ROI/极值/图片验收。网段持久化与网页OTA需先冻结Flash分区/恢复方式/bootloader与固件包校验方案，不直接添加任意BIN写入接口。
+
+### 关键路径与未决
+
+- 全局选择：`firmware/Common/Raw16/t384_raw16.h`；DVP/帧率/温度保护：`firmware/Common/App/t384_product_config.h`；ring：`firmware/Common/Raw16/t384_frame_pipeline.h`。
+- `tools/t384_raw16_bench.py`、`tools/capture_radiometry_calibration.py`、`tools/read_mini2_module_files.py`、`tools/windows_user_action.ps1`、`tools/check_raw16_bench.sh`；相邻Scope `src/plugins/t384/` 当前仅只读。
+- 未决：本轮初始化修复的真实反馈、接线电平/时序、12槽持续消费能力、WN2384/FW00.00.07.01测温与内置两点支持、真实标定/Flash回读/应用、-20～150°C环境温区/允许误差。最新map余量通过；有旧v2真实DVP诊断，没有384完整出图/修复上板/发布结论。
+
+## 历史：2026-09-15暂停，等WN2384T到货
 
 ### 当前状态
 

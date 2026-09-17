@@ -7,13 +7,22 @@
 
 #include "t384_raw16.h"
 
+#ifndef T384_DUALCORE
+#define T384_DUALCORE 0
+#endif
+
 #define T384_PIPELINE_CHUNK_ROWS 8u
 #define T384_PIPELINE_CHUNK_BYTES \
     (T384_RAW16_WIDTH * T384_RAW16_BYTES_PER_PIXEL * T384_PIPELINE_CHUNK_ROWS)
-#if T384_RAW16_FRAME_BYTES == 98304u
+#if T384_DUALCORE
+#define T384_PIPELINE_SLOT_COUNT \
+    (2u * T384_RAW16_FRAME_BYTES / T384_PIPELINE_CHUNK_BYTES)
+#elif T384_RAW16_FRAME_BYTES == 98304u
 #define T384_PIPELINE_SLOT_COUNT 24u
 #else
-#define T384_PIPELINE_SLOT_COUNT 12u
+/* Two of the previous twelve blocks fund the real DVP ping-pong staging.
+ * Combined payload RAM stays at twelve blocks; no new frame-sized buffer. */
+#define T384_PIPELINE_SLOT_COUNT 10u
 #endif
 
 #define T384_CHUNK_FLAG_FRAME_START 0x0001u

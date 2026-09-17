@@ -2,6 +2,7 @@
 #define T384_PRODUCT_CONFIG_H
 
 #include "t384_raw16.h"
+#include "t384_frame_pipeline.h"
 
 /*
  * Development USB identity.
@@ -23,10 +24,11 @@
 
 #define T384_NCM_IPV4_A 192u
 #define T384_NCM_IPV4_B 168u
-#define T384_NCM_IPV4_C 18u
+#define T384_NCM_IPV4_C 17u
 #define T384_NCM_DEVICE_HOST 1u
 #define T384_NCM_FIRST_CLIENT_HOST 2u
-#define T384_NCM_CLIENT_COUNT 3u
+#define T384_NCM_CLIENT_COUNT 19u
+#define T384_NCM_DOMAIN "ir.sipeed.com"
 
 #define T384_HTTP_PORT 80u
 
@@ -39,7 +41,20 @@
 #define T384_MINI2_DVP_HEIGHT T384_RAW16_HEIGHT
 #define T384_MINI2_DVP_ROW_BYTES (T384_MINI2_DVP_WIDTH * 2u)
 #define T384_MINI2_DVP_EXPECTED_ROWS T384_MINI2_DVP_HEIGHT
+#if T384_RAW16_PROFILE == 384u
+/* WCH RM V1.6 29.3.1: JPEG receive mode makes COL_NUM the DMA block
+ * length. This is byte packing only, not a JPEG encoder or wire format. */
+#define T384_MINI2_DMA_BLOCK_ROWS T384_PIPELINE_CHUNK_ROWS
+#else
+#define T384_MINI2_DMA_BLOCK_ROWS 1u
+#endif
+#define T384_MINI2_DMA_BLOCK_BYTES \
+    (T384_MINI2_DVP_ROW_BYTES * T384_MINI2_DMA_BLOCK_ROWS)
+#define T384_MINI2_CAPTURE_IDLE_MS 500u
+/* Fault-only polling policy, not an OEM apply-time guarantee. */
+#define T384_MINI2_MODULE_REARM_MS 4000u
 #if T384_RAW16_PROFILE == 256u
+#define T384_MINI2_DETECTOR_FPS 50u
 #define T384_MINI2_DVP_FPS 50u
 /* WN2256 engineering-only 0/50 C blackbody fit (1 cm, emissivity 0.98).
  * This is intentionally distinct from the fail-closed OEM radiometry path. */
@@ -47,11 +62,25 @@
 #define T384_EXPERIMENTAL_Y16_ZERO_C_X100 3865997u
 #define T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 11828u
 #else
+/* Detector cadence and digital output cadence are independent commands.
+ * Preserve the WN2384 native 60 Hz detector; 30 FPS DVP keeps the existing
+ * transport budget until complete-frame 60 FPS throughput is verified. */
+#define T384_MINI2_DETECTOR_FPS 60u
 #define T384_MINI2_DVP_FPS 30u
 #define T384_EXPERIMENTAL_TEMP_MODEL "unavailable"
 #define T384_EXPERIMENTAL_Y16_ZERO_C_X100 0u
 #define T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 0u
 #endif
+/* Conservative bring-up deadlines, not OEM timing guarantees.  Setters may
+ * reconfigure the video path; read-back queries remain bounded and shorter. */
+#define T384_MINI2_QUERY_TIMEOUT_MS 250u
+#define T384_MINI2_SET_TIMEOUT_MS 1000u
+#define T384_MINI2_DETECTOR_SET_TIMEOUT_MS 2000u
+#define T384_MINI2_QUERY_ATTEMPTS 3u
+/* Boot confirmation policy, not a claimed OEM reconfiguration time. */
+#define T384_MINI2_STATE_CONFIRM_TIMEOUT_MS 2000u
+#define T384_MINI2_STATE_POLL_MS 50u
+#define T384_MINI2_CONTROL_SKIPPED 4u
 #define T384_MINI2_DVP_PCLK_FALLING 0u
 #define T384_MINI2_DVP_HSYNC_LOW 0u
 #define T384_MINI2_DVP_VSYNC_HIGH 1u

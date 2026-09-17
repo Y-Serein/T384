@@ -43,8 +43,7 @@ t384_radiometry_status_t t384_radiometry_validate_profile(
     return T384_RADIOMETRY_OK;
 }
 
-t384_radiometry_status_t t384_radiometry_y16_to_y14(uint16_t y16,
-                                                    uint16_t *y14)
+t384_radiometry_status_t t384_radiometry_y16_to_y14(uint16_t y16, uint16_t *y14)
 {
     if (y14 == NULL) {
         return T384_RADIOMETRY_INVALID_ARGUMENT;

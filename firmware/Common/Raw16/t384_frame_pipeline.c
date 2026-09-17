@@ -1,5 +1,7 @@
 #include "t384_frame_pipeline.h"
 
+#if !T384_DUALCORE
+
 #include <stddef.h>
 #include <string.h>
 
@@ -15,7 +17,7 @@ typedef struct {
     uint32_t capture_ms;
     uint16_t length;
     uint16_t flags;
-} pipeline_slot_t;
+} pipeline_slot_t;              /* ÔªÊý¾Ý */
 typedef char pipeline_slot_metadata_must_be_16_bytes[
     sizeof(pipeline_slot_t) == 16u ? 1 : -1];
 
@@ -58,6 +60,7 @@ static uint32_t queued_count(void)
     return queued;
 }
 
+/* ÐòºÅËø */
 static void producer_stats_begin(void)
 {
     ++producer_stats_sequence;
@@ -307,3 +310,5 @@ void t384_frame_pipeline_get_stats(t384_frame_pipeline_stats_t *out)
     out->queued_chunks = queued_count();
     out->consumer_leased = consumer_leased ? 1u : 0u;
 }
+
+#endif

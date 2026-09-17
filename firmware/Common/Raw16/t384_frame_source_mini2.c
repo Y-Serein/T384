@@ -1,6 +1,7 @@
 #include "t384_frame_source.h"
 
-#if !T384_FRAME_SOURCE_SIMULATOR
+#if !T384_FRAME_SOURCE_SIMULATOR && \
+    (!T384_DUALCORE || defined(Core_V5F))
 
 #include <stddef.h>
 #include <string.h>
@@ -29,7 +30,10 @@
  * A frame is published only when all rows and the frame-end interrupt agree;
  * FIFO/geometry/slot errors discard the whole physical frame.
  */
-static uint8_t dvp_row_sink[2][T384_MINI2_DVP_ROW_BYTES]
+static uint8_t dvp_row_sink[2][T384_MINI2_DMA_BLOCK_BYTES]
+#if T384_DUALCORE
+    __attribute__((section(".t384_dma")))
+#endif
     __attribute__((aligned(32)));
 static volatile t384_frame_source_stats_t source_stats;
 static volatile uint32_t stats_sequence;
@@ -39,6 +43,9 @@ static volatile uint32_t current_frame_sequence;
 static volatile uint32_t current_chunk_rows;
 static volatile uint32_t dma_toggle;
 static volatile bool frame_open;
+#if T384_DUALCORE
+static bool whole_frame_skipped;
+#endif
 static volatile bool frame_published;
 static volatile bool final_chunk_pending;
 static uint8_t first_row_prefix[T384_FRAME_SOURCE_PREFIX_BYTES];
@@ -48,6 +55,20 @@ static t384_raw16_roi_accumulator_t roi_accumulator;
 static volatile uint32_t roi_frame_bad;
 static uint32_t fps_started_ms;
 static uint32_t fps_frames;
+static volatile uint32_t last_dvp_event_ms;
+#if T384_RAW16_PROFILE == 384u
+static uint32_t last_module_probe_ms;
+static uint32_t last_module_rearm_ms;
+static bool module_rearm_pending;
+#endif
+
+#if T384_MINI2_DMA_BLOCK_ROWS != 1u && \
+    T384_MINI2_DMA_BLOCK_ROWS != T384_PIPELINE_CHUNK_ROWS
+#error "DVP DMA block must be one row or one whole pipeline chunk"
+#endif
+#if T384_MINI2_DVP_EXPECTED_ROWS % T384_MINI2_DMA_BLOCK_ROWS != 0u
+#error "DVP frame must contain an integral number of DMA blocks"
+#endif
 
 /* Interrupt handler only enqueues bytes. Parsing/CRC/HTTP remain in task. */
 static uint8_t file_rx_queue[1024];
@@ -136,6 +157,11 @@ static int mini2_uart0_send_command(
     uint16_t response_data_capacity)
 {
     uint8_t response[T384_MINI2_MAX_RESPONSE_BYTES];
+    source_stats.mini2_control_ack_valid = 0u;
+    source_stats.mini2_control_ack_status = 0xFFu;
+    if (response_data_length != NULL) {
+        *response_data_length = 0u;
+    }
     mini2_uart0_flush_rx();
     ++source_stats.mini2_control_attempts;
     for (size_t i = 0u; i < T384_MINI2_DVP30_COMMAND_BYTES; ++i) {
@@ -147,13 +173,23 @@ static int mini2_uart0_send_command(
     while (USART_GetFlagStatus(USART4, USART_FLAG_TC) == RESET) {
     }
 
-    const uint32_t deadline = t384_millis() + 150u;
+    const uint32_t timeout_ms = response_data_capacity != 0u
+                                   ? T384_MINI2_QUERY_TIMEOUT_MS
+                                   : command[7] == 0x44u
+                                         ? T384_MINI2_DETECTOR_SET_TIMEOUT_MS
+                                         : T384_MINI2_SET_TIMEOUT_MS;
+    const uint32_t deadline = t384_millis() + timeout_ms;
+    /* Device-info strings may be shorter than the requested buffer.  Binary
+     * state queries below must still match their exact protocol lengths. */
+    const bool text_query = command[5] == 0x01u && command[7] == 0x81u;
     size_t received = 0u;
+    bool saw_bytes = false;
     while ((int32_t)(t384_millis() - deadline) < 0) {
         if (USART_GetFlagStatus(USART4, USART_FLAG_RXNE) == RESET) {
             continue;
         }
         const uint8_t value = (uint8_t)USART_ReceiveData(USART4);
+        saw_bytes = true;
         if (received < sizeof(response)) {
             response[received] = value;
             ++received;
@@ -161,35 +197,63 @@ static int mini2_uart0_send_command(
             memmove(response, response + 1u, sizeof(response) - 1u);
             response[sizeof(response) - 1u] = value;
         }
-        if (received >= T384_MINI2_GENERIC_ACK_BYTES) {
+        /* Recover framing after noise/truncated replies rather than pinning
+         * the parser to the first bytes forever. */
+        for (;;) {
+            while (received >= 2u &&
+                   (response[0] != 0xBEu || response[1] != 0xAAu)) {
+                memmove(response, response + 1u, --received);
+            }
+            if (received < 4u) {
+                break;
+            }
             const uint16_t payload_length =
                 (uint16_t)response[2] | ((uint16_t)response[3] << 8);
             const size_t expected_length = (size_t)payload_length + 8u;
-            if (payload_length != 0u && expected_length <= received) {
+            if (payload_length == 0u || expected_length > sizeof(response)) {
+                memmove(response, response + 1u, --received);
+                continue;
+            }
+            if (expected_length > received) {
+                break;
+            }
+            {
                 uint8_t ack_status = 0xFFu;
                 const uint8_t *data = NULL;
                 uint16_t data_length = 0u;
                 if (t384_mini2_parse_response(response, expected_length,
                                                &ack_status, &data,
                                                &data_length)) {
-                source_stats.mini2_control_ack_valid = 1u;
-                source_stats.mini2_control_ack_status = ack_status;
-                if (response_data != NULL && response_data_length != NULL &&
-                    data_length <= response_data_capacity) {
-                    memcpy(response_data, data, data_length);
-                    *response_data_length = data_length;
-                }
-                return ack_status == 0u ? 1 : 0;
+                    /* A late setter ACK must not satisfy a following query.
+                     * Only accept the requested reply shape (or a rejection). */
+                    if (ack_status != 0u ||
+                        data_length == response_data_capacity ||
+                        (text_query && data_length != 0u &&
+                         data_length <= response_data_capacity)) {
+                        source_stats.mini2_control_ack_valid = 1u;
+                        source_stats.mini2_control_ack_status = ack_status;
+                        if (ack_status == 0u && response_data != NULL &&
+                            response_data_length != NULL) {
+                            memcpy(response_data, data, data_length);
+                            *response_data_length = data_length;
+                        }
+                        return ack_status == 0u ? 1 : 0;
+                    }
+                    memmove(response, response + expected_length,
+                            received - expected_length);
+                    received -= expected_length;
+                } else {
+                    memmove(response, response + 1u, --received);
                 }
             }
         }
     }
-    if (received == 0u) {
+    if (!saw_bytes) {
         ++source_stats.mini2_control_ack_timeout;
     } else {
         ++source_stats.mini2_control_ack_bad;
     }
-    return received == 0u ? 2 : 3;
+    return !saw_bytes ? 2 : 3;
 }
 
 static int mini2_uart0_send_video_command(uint8_t command_index,
@@ -250,6 +314,218 @@ static int mini2_uart0_query_stream_mode(uint8_t *mode)
         *mode = data[0];
     }
     return result == 1 && data_length != 1u ? 3 : result;
+}
+
+static bool mini2_uart0_query_detector_state(void)
+{
+    uint8_t data[1] = {0u};
+    uint16_t length = 0u;
+    const int result = mini2_uart0_query(0x84u, 1u, data, &length);
+    source_stats.mini2_query_detector_valid = result == 1 && length == 1u;
+    source_stats.mini2_query_detector_status =
+        source_stats.mini2_control_ack_status;
+    source_stats.mini2_query_detector_fps =
+        source_stats.mini2_query_detector_valid ? data[0] : 0u;
+    return source_stats.mini2_query_detector_valid != 0u;
+}
+
+static bool mini2_uart0_confirm_digital(void)
+{
+    const uint32_t deadline =
+        t384_millis() + T384_MINI2_STATE_CONFIRM_TIMEOUT_MS;
+    unsigned failures = 0u;
+    while ((int32_t)(t384_millis() - deadline) < 0) {
+        uint8_t data[T384_MINI2_DIGITAL_RESPONSE_BYTES] = {0u};
+        uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES];
+        uint16_t length = 0u;
+        t384_mini2_build_digital_query_command(command);
+        const int result = mini2_uart0_send_command(command, data, &length,
+                                                    sizeof(data));
+        source_stats.mini2_query_digital_valid =
+            result == 1 && length == sizeof(data);
+        source_stats.mini2_query_digital_status =
+            source_stats.mini2_control_ack_status;
+        source_stats.mini2_query_digital_enabled = data[0];
+        source_stats.mini2_query_digital_format = data[1];
+        source_stats.mini2_query_digital_fps = data[2];
+        if (source_stats.mini2_query_digital_valid != 0u && data[0] == 1u &&
+            data[1] == 1u && data[2] == T384_MINI2_DVP_FPS) {
+            return true;
+        }
+        /* Valid old state can precede application of a volatile video command.
+         * Do not count it as a UART failure, but never wait without a bound. */
+        if (source_stats.mini2_query_digital_valid == 0u) {
+            if (++failures >= T384_MINI2_QUERY_ATTEMPTS) {
+                break;
+            }
+        } else {
+            failures = 0u;
+        }
+        const uint32_t next_poll = t384_millis() + T384_MINI2_STATE_POLL_MS;
+        while ((int32_t)(t384_millis() - next_poll) < 0 &&
+               (int32_t)(t384_millis() - deadline) < 0) {
+            /* Boot only, before DVP/DMA is enabled. */
+        }
+    }
+    return false;
+}
+
+static int mini2_uart0_confirm_stream_mode(uint8_t expected, uint8_t *mode)
+{
+    int result = 2;
+    for (unsigned attempt = 0u; attempt < T384_MINI2_QUERY_ATTEMPTS; ++attempt) {
+        *mode = 0xFFu;
+        result = mini2_uart0_query_stream_mode(mode);
+        if (result == 1 && *mode == expected) {
+            break;
+        }
+    }
+    return result;
+}
+
+#if T384_RAW16_PROFILE == 384u
+/* Fault-only main-task operation with local DMA/IRQ stopped. Each probe is
+ * one bounded read per state, never boot's two-second polling loop. After an
+ * existing volatile 0x46 start, wait for a subsequent probe's actual state before
+ * reopening capture. No detector/mode/persist/calibration setter is sent. */
+static void mini2_probe_and_rearm(void)
+{
+    ++source_stats.dvp_module_probes;
+    source_stats.stream_ready = 0u;
+    uint8_t digital[T384_MINI2_DIGITAL_RESPONSE_BYTES] = {0u};
+    uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES];
+    uint16_t length = 0u;
+    t384_mini2_build_digital_query_command(command);
+    const int result = mini2_uart0_send_command(command, digital, &length,
+                                                sizeof(digital));
+    source_stats.mini2_query_digital_valid = result == 1 && length == sizeof(digital);
+    source_stats.mini2_query_digital_status = source_stats.mini2_control_ack_status;
+    source_stats.mini2_query_digital_enabled = digital[0];
+    source_stats.mini2_query_digital_format = digital[1];
+    source_stats.mini2_query_digital_fps = digital[2];
+    source_stats.mini2_query_stream_mode_valid = 0u;
+    source_stats.mini2_query_stream_mode_status = 0xFFu;
+    source_stats.mini2_query_stream_mode_0x85 = 0xFFu;
+    if (source_stats.mini2_query_digital_valid == 0u) return;
+
+    uint8_t mode = 0xFFu;
+    const int mode_result = mini2_uart0_query_stream_mode(&mode);
+    source_stats.mini2_query_stream_mode_valid = mode_result == 1;
+    source_stats.mini2_query_stream_mode_status = source_stats.mini2_control_ack_status;
+    source_stats.mini2_query_stream_mode_0x85 = mode;
+    const uint8_t expected_mode = source_stats.frame_mode == T384_FRAME_MODE_TPD_Y16
+        ? T384_MINI2_STREAM_MODE_TPD_Y16 : T384_MINI2_STREAM_MODE_PICTURE;
+    /* A rejected or timed-out mode query must not block recovery. The 0x86
+     * read-back above already reported the digital output as stopped, which is
+     * exactly the condition this handler exists to recover from; the last
+     * confirmed frame mode is the only mode this firmware ever requests. Only
+     * a mode that reads back and disagrees stays fail-closed. */
+    if (mode_result == 1 && mode != expected_mode) return;
+
+    if (module_rearm_pending && digital[0] == 1u && digital[1] == 1u &&
+        digital[2] == T384_MINI2_DVP_FPS) {
+        module_rearm_pending = false;
+        source_stats.stream_ready = 1u;
+        return;
+    }
+    if (module_rearm_pending &&
+        (uint32_t)(t384_millis() - last_module_rearm_ms) <
+            T384_MINI2_MODULE_REARM_MS) {
+        return; /* Poll application; never keep resetting the apply window. */
+    }
+    ++source_stats.dvp_module_rearms;
+    source_stats.mini2_control_dvp30_status = (uint32_t)mini2_uart0_send_video_command(
+        0x46u, 1u, 1u, T384_MINI2_DVP_FPS);
+    /* ACK loss does not prove failure. Next probe requires real enabled,
+     * format, FPS and mode read-back, never the setter's ACK alone. */
+    module_rearm_pending = true;
+    last_module_rearm_ms = t384_millis();
+}
+#endif
+
+/* Boot-only, with DVP/DMA still disabled.  Do not run these bounded polling
+ * commands from an ISR or the streaming task.  Read-back, not stale ACKs,
+ * establishes the active digital output and data domain. */
+static void mini2_configure_stream(void)
+{
+    source_stats.mini2_control_digital_off_status =
+        (uint32_t)mini2_uart0_send_video_command(0x46u, 0u, 0u, 0u);
+    source_stats.mini2_control_analog_off_status =
+        (uint32_t)mini2_uart0_send_video_command(0x4Au, 0u, 0u, 0u);
+
+    /* Native 60 Hz WN2384 must not receive the previous detector-30 command.
+     * Keep the legacy diagnostic key, but 4 explicitly means not sent. */
+    source_stats.mini2_control_detector30_status = T384_MINI2_CONTROL_SKIPPED;
+    if (source_stats.mini2_query_detector_valid != 0u &&
+        source_stats.mini2_query_detector_fps != T384_MINI2_DETECTOR_FPS) {
+        source_stats.mini2_control_detector30_status =
+            (uint32_t)mini2_uart0_send_video_command(
+                0x44u, T384_MINI2_DETECTOR_FPS, 0u, 0u);
+        bool detector_confirmed = false;
+        for (unsigned attempt = 0u; attempt < T384_MINI2_QUERY_ATTEMPTS;
+             ++attempt) {
+            if (mini2_uart0_query_detector_state() &&
+                source_stats.mini2_query_detector_fps ==
+                    T384_MINI2_DETECTOR_FPS) {
+                detector_confirmed = true;
+                break;
+            }
+        }
+        if (!detector_confirmed) {
+            return; /* Stop mutations while the detector is unresponsive. */
+        }
+    }
+
+    source_stats.mini2_control_dvp30_status =
+        (uint32_t)mini2_uart0_send_video_command(
+            0x46u, 1u, 1u, T384_MINI2_DVP_FPS);
+    if (!mini2_uart0_confirm_digital()) {
+        return;
+    }
+    source_stats.mini2_control_tpd_set_status =
+        (uint32_t)mini2_uart0_send_stream_mode(T384_MINI2_STREAM_MODE_TPD_Y16);
+    uint8_t active_mode = 0xFFu;
+    source_stats.mini2_control_tpd_query_status =
+        (uint32_t)mini2_uart0_confirm_stream_mode(
+            T384_MINI2_STREAM_MODE_TPD_Y16, &active_mode);
+    source_stats.mini2_control_tpd_query_mode = active_mode;
+    source_stats.mini2_control_tpd_query_valid =
+        source_stats.mini2_control_tpd_query_status == 1u;
+
+    if (source_stats.mini2_control_tpd_query_valid != 0u &&
+        active_mode == T384_MINI2_STREAM_MODE_TPD_Y16 &&
+        mini2_uart0_confirm_digital()) {
+        source_stats.frame_mode = T384_FRAME_MODE_TPD_Y16;
+        source_stats.pixel_format = T384_FRAME_PIXEL_FORMAT_Y16_BE;
+        source_stats.stream_ready = 1u;
+        return;
+    }
+    if (source_stats.mini2_control_tpd_query_valid == 0u) {
+        return; /* No confirmed domain: do not cascade into more setters. */
+    }
+
+    /* Only a responsive module can enter Picture recovery.  Never substitute
+     * Picture/UYVY for Y16 radiometry or enable the temperature model here. */
+    source_stats.mini2_control_picture_fallback_used = 1u;
+    source_stats.mini2_control_picture_set_status =
+        (uint32_t)mini2_uart0_send_stream_mode(T384_MINI2_STREAM_MODE_PICTURE);
+    source_stats.mini2_control_picture_dvp_status =
+        (uint32_t)mini2_uart0_send_video_command(
+            0x46u, 1u, 1u, T384_MINI2_DVP_FPS);
+    active_mode = 0xFFu;
+    source_stats.mini2_control_picture_query_status =
+        (uint32_t)mini2_uart0_confirm_stream_mode(
+            T384_MINI2_STREAM_MODE_PICTURE, &active_mode);
+    source_stats.mini2_control_picture_query_mode = active_mode;
+    source_stats.mini2_control_picture_query_valid =
+        source_stats.mini2_control_picture_query_status == 1u;
+    if (source_stats.mini2_control_picture_query_valid != 0u &&
+        active_mode == T384_MINI2_STREAM_MODE_PICTURE &&
+        mini2_uart0_confirm_digital()) {
+        source_stats.frame_mode = T384_FRAME_MODE_PICTURE;
+        source_stats.pixel_format = T384_FRAME_PIXEL_FORMAT_UYVY;
+        source_stats.stream_ready = 1u;
+    }
 }
 
 static int mini2_uart0_query_info(uint8_t subcommand,
@@ -349,6 +625,9 @@ static void mini2_dvp_configure(void)
     mini2_dvp_reset();
 
     uint8_t cr0 = RB_DVP_D8_MOD;
+#if T384_MINI2_DMA_BLOCK_ROWS != 1u
+    cr0 |= RB_DVP_JPEG;
+#endif
 #if T384_MINI2_DVP_PCLK_FALLING
     cr0 |= RB_DVP_P_POLAR;
 #endif
@@ -361,7 +640,7 @@ static void mini2_dvp_configure(void)
     DVP->CR0 = cr0;
     DVP->CR1 = 0u;
     DVP->ROW_NUM = T384_MINI2_DVP_EXPECTED_ROWS;
-    DVP->COL_NUM = T384_MINI2_DVP_ROW_BYTES;
+    DVP->COL_NUM = T384_MINI2_DMA_BLOCK_BYTES;
     DVP->DMA_BUF0 = (uint32_t)(uintptr_t)dvp_row_sink[0];
     DVP->DMA_BUF1 = (uint32_t)(uintptr_t)dvp_row_sink[1];
     DVP->HOFFCNT = 0u;
@@ -432,8 +711,11 @@ static void finish_frame_isr(uint32_t now)
     source_stats.roi_le_sum_squares = roi_snapshot.le_sum_squares;
     source_stats.roi_le_minimum = roi_snapshot.le_minimum;
     source_stats.roi_le_maximum = roi_snapshot.le_maximum;
-    if (current_frame_bad != 0u ||
-        current_frame_rows != T384_MINI2_DVP_EXPECTED_ROWS) {
+    if ((current_frame_bad != 0u
+#if T384_DUALCORE
+         && !whole_frame_skipped
+#endif
+        ) || current_frame_rows != T384_MINI2_DVP_EXPECTED_ROWS) {
         ++source_stats.dvp_bad_frames;
     }
     source_stats.capture_active = 0u;
@@ -464,10 +746,12 @@ void DVP_IRQHandler(void)
     const uint8_t flags = DVP->IFR;
     DVP->IFR = flags;
     const uint32_t now = t384_millis();
+    last_dvp_event_ms = now;
 
     stats_begin();
     if ((flags & RB_DVP_IF_STR_FRM) != 0u) {
-        if (frame_open) {
+        if (frame_open) 
+        {
             t384_frame_pipeline_abort_frame();
         }
         ++source_stats.dvp_frame_starts;
@@ -481,19 +765,24 @@ void DVP_IRQHandler(void)
         final_chunk_pending = false;
         first_row_prefix_captured = false;
         t384_raw16_roi_reset(&roi_accumulator);
-        roi_frame_bad =
-            source_stats.frame_mode == T384_FRAME_MODE_TPD_Y16
-                ? 0u
-                : 1u;
+        roi_frame_bad = source_stats.frame_mode == T384_FRAME_MODE_TPD_Y16 ? 0u : 1u;
         source_stats.capture_active = 1u;
 
         uint8_t *destination = NULL;
         uint16_t capacity = 0u;
+#if T384_DUALCORE
+        const bool frame_accepted = t384_frame_pipeline_begin_frame(
+            current_frame_sequence, now, t384_frame_source_mode_flags());
+        whole_frame_skipped = !frame_accepted;
+        if (frame_accepted &&
+#else
         if (t384_frame_pipeline_empty() &&
-            t384_frame_pipeline_begin_frame(
-                current_frame_sequence, now, t384_frame_source_mode_flags()) &&
+            t384_frame_pipeline_begin_frame(current_frame_sequence, now,
+                t384_frame_source_mode_flags()) &&
+#endif
             t384_frame_pipeline_acquire_write(&destination, &capacity) &&
-            capacity >= T384_PIPELINE_CHUNK_BYTES) {
+            capacity >= T384_PIPELINE_CHUNK_BYTES) 
+        {
             active_chunk = destination;
             frame_open = true;
         } else {
@@ -502,11 +791,16 @@ void DVP_IRQHandler(void)
         }
     }
 
-    if ((flags & RB_DVP_IF_FIFO_OV) != 0u) {
+    if ((flags & RB_DVP_IF_FIFO_OV) != 0u) 
+    {
         ++source_stats.dvp_fifo_overflows;
+#if T384_DUALCORE
+        whole_frame_skipped = false;
+#endif
         current_frame_bad = 1u;
         roi_frame_bad = 1u;
-        if (frame_open) {
+        if (frame_open) 
+        {
             t384_frame_pipeline_abort_frame();
             frame_open = false;
             active_chunk = NULL;
@@ -514,43 +808,61 @@ void DVP_IRQHandler(void)
     }
 
     if ((flags & RB_DVP_IF_ROW_DONE) != 0u) {
+        /* ROW_DONE counts DMA events: one row in 256, eight rows in 384.
+         * Expose block size alongside this legacy key; do not invent IRQs. */
         ++source_stats.dvp_row_events;
         if (source_stats.capture_active != 0u) {
-            ++current_frame_rows;
-            source_stats.dvp_observed_bytes += T384_MINI2_DVP_ROW_BYTES;
+            const uint32_t first_row = current_frame_rows;
+            current_frame_rows += T384_MINI2_DMA_BLOCK_ROWS;
+            source_stats.dvp_observed_bytes += T384_MINI2_DMA_BLOCK_BYTES;
             if (current_frame_rows > T384_MINI2_DVP_EXPECTED_ROWS) {
+#if T384_DUALCORE
+                whole_frame_skipped = false;
+#endif
                 current_frame_bad = 1u;
                 roi_frame_bad = 1u;
+                if (frame_open) {
+                    t384_frame_pipeline_abort_frame();
+                    frame_open = false;
+                    active_chunk = NULL;
+                }
             }
-            const uint32_t completed_sink = dma_toggle & 1u;
-            if (current_frame_rows == 1u && !first_row_prefix_captured) {
+            /* RAW row mode resets the bank at VSYNC. Length-driven mode
+             * does not: derive the completed bank from hardware after toggle,
+             * including the frame following an aborted/short frame. */
+            const uint32_t completed_sink = T384_MINI2_DMA_BLOCK_ROWS == 1u
+                ? dma_toggle & 1u
+                : (DVP->CR1 & RB_DVP_BUF_TOG) != 0u ? 0u : 1u;
+            if (first_row == 0u && !first_row_prefix_captured)
+            {
                 memcpy(first_row_prefix, dvp_row_sink[completed_sink],
                        T384_FRAME_SOURCE_PREFIX_BYTES);
                 first_row_prefix_captured = true;
             }
-            t384_raw16_roi_add_be16_row(
-                &roi_accumulator, current_frame_rows - 1u,
-                dvp_row_sink[completed_sink], T384_MINI2_DVP_ROW_BYTES);
+            for (uint32_t row = 0u; row < T384_MINI2_DMA_BLOCK_ROWS; ++row) {
+                t384_raw16_roi_add_be16_row(&roi_accumulator, first_row + row,
+                    dvp_row_sink[completed_sink] + row * T384_MINI2_DVP_ROW_BYTES,
+                    T384_MINI2_DVP_ROW_BYTES);
+            }
             if (frame_open && active_chunk != NULL) {
-                memcpy(active_chunk +
-                           current_chunk_rows * T384_MINI2_DVP_ROW_BYTES,
+                memcpy(active_chunk + current_chunk_rows * T384_MINI2_DVP_ROW_BYTES,
                        dvp_row_sink[completed_sink],
-                       T384_MINI2_DVP_ROW_BYTES);
-                ++current_chunk_rows;
+                       T384_MINI2_DMA_BLOCK_BYTES);
+                current_chunk_rows += T384_MINI2_DMA_BLOCK_ROWS;
             }
-            if ((dma_toggle & 1u) == 0u) {
-                DVP->DMA_BUF0 =
-                    (uint32_t)(uintptr_t)dvp_row_sink[completed_sink];
+#if T384_MINI2_DMA_BLOCK_ROWS == 1u
+            if ((dma_toggle & 1u) == 0u)
+            {
+                DVP->DMA_BUF0 = (uint32_t)(uintptr_t)dvp_row_sink[completed_sink];
             } else {
-                DVP->DMA_BUF1 =
-                    (uint32_t)(uintptr_t)dvp_row_sink[completed_sink];
+                DVP->DMA_BUF1 = (uint32_t)(uintptr_t)dvp_row_sink[completed_sink];
             }
+#endif
         } else {
             ++source_stats.dvp_orphan_rows;
         }
 
-        const bool frame_end =
-            current_frame_rows == T384_MINI2_DVP_EXPECTED_ROWS;
+        const bool frame_end = current_frame_rows == T384_MINI2_DVP_EXPECTED_ROWS;
         const bool chunk_end = current_chunk_rows == T384_PIPELINE_CHUNK_ROWS;
         if (source_stats.capture_active != 0u && frame_open && frame_end) {
             if (!chunk_end) {
@@ -558,8 +870,7 @@ void DVP_IRQHandler(void)
             } else {
                 final_chunk_pending = true;
             }
-        } else if (source_stats.capture_active != 0u && frame_open &&
-                   chunk_end) {
+        } else if (source_stats.capture_active != 0u && frame_open && chunk_end) {
             if (!t384_frame_pipeline_commit_write(
                     (uint16_t)(current_chunk_rows * T384_MINI2_DVP_ROW_BYTES),
                     false)) {
@@ -571,8 +882,7 @@ void DVP_IRQHandler(void)
                 uint8_t *destination = NULL;
                 uint16_t capacity = 0u;
                 current_chunk_rows = 0u;
-                if (!t384_frame_pipeline_acquire_write(&destination,
-                                                       &capacity) ||
+                if (!t384_frame_pipeline_acquire_write(&destination, &capacity) ||
                     capacity < T384_PIPELINE_CHUNK_BYTES) {
                     current_frame_bad = 1u;
                     t384_frame_pipeline_abort_frame();
@@ -593,7 +903,12 @@ void DVP_IRQHandler(void)
     if ((flags & RB_DVP_IF_STP_FRM) != 0u) {
         ++source_stats.dvp_stop_frame_irqs;
     }
-    if ((flags & (RB_DVP_IF_FRM_DONE | RB_DVP_IF_STP_FRM)) != 0u &&
+    /* Length-driven RAW capture uses VSYNC end, never a JPEG-mode internal
+     * frame-done indication, to validate all expected blocks. */
+    const uint8_t end_flags = T384_MINI2_DMA_BLOCK_ROWS == 1u
+                                 ? RB_DVP_IF_FRM_DONE | RB_DVP_IF_STP_FRM
+                                 : RB_DVP_IF_STP_FRM;
+    if ((flags & end_flags) != 0u &&
         source_stats.capture_active != 0u) {
         finish_frame_isr(now);
     }
@@ -635,22 +950,19 @@ bool t384_frame_source_init(void)
 
     uint8_t query_data[32] = {0};
     uint16_t query_length = 0u;
-    const int detector_query = mini2_uart0_query(0x84u, 1u, query_data,
-                                                 &query_length);
-    source_stats.mini2_query_detector_status =
-        source_stats.mini2_control_ack_status;
-    if (detector_query == 1 && query_length == 1u) {
-        source_stats.mini2_query_detector_valid = 1u;
-        source_stats.mini2_query_detector_fps = query_data[0];
-    }
+    (void)mini2_uart0_query_detector_state();
 
     memset(query_data, 0, sizeof(query_data));
     query_length = 0u;
-    const int digital_query = mini2_uart0_query(0x86u, 4u, query_data,
-                                                &query_length);
+    uint8_t digital_command[T384_MINI2_DVP30_COMMAND_BYTES];
+    t384_mini2_build_digital_query_command(digital_command);
+    const int digital_query = mini2_uart0_send_command(
+        digital_command, query_data, &query_length,
+        T384_MINI2_DIGITAL_RESPONSE_BYTES);
     source_stats.mini2_query_digital_status =
         source_stats.mini2_control_ack_status;
-    if (digital_query == 1 && query_length == 4u) {
+    if (digital_query == 1 &&
+        query_length == T384_MINI2_DIGITAL_RESPONSE_BYTES) {
         source_stats.mini2_query_digital_valid = 1u;
         source_stats.mini2_query_digital_enabled = query_data[0];
         source_stats.mini2_query_digital_format = query_data[1];
@@ -770,70 +1082,82 @@ bool t384_frame_source_init(void)
             ((uint32_t)query_data[3] << 24);
     }
 
-    /* Configure the volatile TPD/Y16 path.  Command 0x49 is the independent
-     * persist operation and is deliberately absent.  AC020 uses output-then-
-     * mid-mode for TPD, and the inverse order for Picture recovery. */
-    source_stats.mini2_control_digital_off_status =
-        (uint32_t)mini2_uart0_send_video_command(0x46u, 0x00u, 0x00u, 0x00u);
-    source_stats.mini2_control_analog_off_status =
-        (uint32_t)mini2_uart0_send_video_command(0x4Au, 0x00u, 0x00u, 0x00u);
-    source_stats.mini2_control_detector30_status =
-        (uint32_t)mini2_uart0_send_video_command(0x44u, T384_MINI2_DVP_FPS,
-                                                 0x00u, 0x00u);
-    source_stats.mini2_control_dvp30_status =
-        (uint32_t)mini2_uart0_send_video_command(0x46u, 0x01u, 0x01u,
-                                                 T384_MINI2_DVP_FPS);
-    source_stats.mini2_control_tpd_set_status =
-        (uint32_t)mini2_uart0_send_stream_mode(
-            T384_MINI2_STREAM_MODE_TPD_Y16);
-    uint8_t active_mode = 0xFFu;
-    source_stats.mini2_control_tpd_query_status =
-        (uint32_t)mini2_uart0_query_stream_mode(&active_mode);
-    source_stats.mini2_control_tpd_query_mode = active_mode;
-    source_stats.mini2_control_tpd_query_valid =
-        source_stats.mini2_control_tpd_query_status == 1u ? 1u : 0u;
-
-    if (source_stats.mini2_control_dvp30_status == 1u &&
-        source_stats.mini2_control_tpd_set_status == 1u &&
-        source_stats.mini2_control_tpd_query_valid != 0u &&
-        active_mode == T384_MINI2_STREAM_MODE_TPD_Y16) {
-        source_stats.frame_mode = T384_FRAME_MODE_TPD_Y16;
-        source_stats.pixel_format = T384_FRAME_PIXEL_FORMAT_Y16_BE;
-        source_stats.stream_ready = 1u;
-    } else {
-        source_stats.mini2_control_picture_fallback_used = 1u;
-        source_stats.mini2_control_picture_set_status =
-            (uint32_t)mini2_uart0_send_stream_mode(
-                T384_MINI2_STREAM_MODE_PICTURE);
-        source_stats.mini2_control_picture_dvp_status =
-            (uint32_t)mini2_uart0_send_video_command(
-                0x46u, 0x01u, 0x01u, T384_MINI2_DVP_FPS);
-        active_mode = 0xFFu;
-        source_stats.mini2_control_picture_query_status =
-            (uint32_t)mini2_uart0_query_stream_mode(&active_mode);
-        source_stats.mini2_control_picture_query_mode = active_mode;
-        source_stats.mini2_control_picture_query_valid =
-            source_stats.mini2_control_picture_query_status == 1u ? 1u : 0u;
-        if (source_stats.mini2_control_picture_set_status == 1u &&
-            source_stats.mini2_control_picture_dvp_status == 1u &&
-            source_stats.mini2_control_picture_query_valid != 0u &&
-            active_mode == T384_MINI2_STREAM_MODE_PICTURE) {
-            source_stats.frame_mode = T384_FRAME_MODE_PICTURE;
-            source_stats.pixel_format = T384_FRAME_PIXEL_FORMAT_UYVY;
-            source_stats.stream_ready = 1u;
-        }
-    }
+    /* Volatile setup only; 0x49 parameter persistence remains absent. */
+    mini2_configure_stream();
 
     NVIC_SetPriority(DVP_IRQn, 0u);
     NVIC_EnableIRQ(DVP_IRQn);
     DVP->CR1 |= RB_DVP_DMA_EN;
     DVP->CR0 |= RB_DVP_ENABLE;
+    last_dvp_event_ms = t384_millis();
+#if T384_RAW16_PROFILE == 384u
+    last_module_probe_ms = last_dvp_event_ms;
+    last_module_rearm_ms = last_dvp_event_ms;
+    module_rearm_pending = false;
+#endif
     return true;
 }
 
 void t384_frame_source_task(void)
 {
     t384_module_files_task(t384_millis());
+    uint32_t now = t384_millis();
+    if (!file_port_held && source_stats.initialized != 0u &&
+#if T384_RAW16_PROFILE == 384u
+        source_stats.frame_mode != T384_FRAME_MODE_UNKNOWN &&
+#else
+        source_stats.stream_ready != 0u &&
+#endif
+        (int32_t)(now - last_dvp_event_ms) >=
+            (int32_t)T384_MINI2_CAPTURE_IDLE_MS) {
+        /* Local receiver recovery only. Never reset/write the MINI2 here.
+         * Stop DMA before aborting ownership; do not rearm during table I/O. */
+        NVIC_DisableIRQ(DVP_IRQn);
+        now = t384_millis();
+        if ((int32_t)(now - last_dvp_event_ms) <
+            (int32_t)T384_MINI2_CAPTURE_IDLE_MS) {
+            NVIC_EnableIRQ(DVP_IRQn);
+            return;
+        }
+        stats_begin();
+        source_stats.dvp_restart_cr0 = DVP->CR0;
+        source_stats.dvp_restart_cr1 = DVP->CR1;
+        source_stats.dvp_restart_ifr = DVP->IFR;
+        mini2_dvp_reset();
+        if (source_stats.capture_active != 0u) {
+            current_frame_bad = roi_frame_bad = 1u;
+            finish_frame_isr(now);
+        } else if (frame_open) {
+            t384_frame_pipeline_abort_frame();
+            frame_open = false;
+        }
+        active_chunk = NULL;
+        current_frame_rows = current_chunk_rows = dma_toggle = 0u;
+        final_chunk_pending = false;
+        source_stats.source_fps_x1000 = 0u;
+        fps_started_ms = now;
+        fps_frames = 0u;
+        ++source_stats.dvp_restarts;
+        stats_end();
+#if T384_RAW16_PROFILE == 384u
+        const uint32_t probe_interval = module_rearm_pending
+            ? T384_MINI2_STATE_POLL_MS : T384_MINI2_MODULE_REARM_MS;
+        if ((uint32_t)(now - last_module_probe_ms) >= probe_interval) {
+            mini2_probe_and_rearm();
+            last_module_probe_ms = t384_millis();
+        }
+#endif
+        now = t384_millis();
+        stats_begin();
+        mini2_dvp_configure();
+        last_dvp_event_ms = now;
+        stats_end();
+        if (source_stats.stream_ready != 0u) {
+            NVIC_EnableIRQ(DVP_IRQn);
+            DVP->CR1 |= RB_DVP_DMA_EN;
+            DVP->CR0 |= RB_DVP_ENABLE;
+        }
+    }
 }
 
 bool t384_module_file_port_pause(uint8_t **scratch, size_t *capacity)
@@ -854,6 +1178,7 @@ bool t384_module_file_port_pause(uint8_t **scratch, size_t *capacity)
         mini2_dvp_configure();
         NVIC_EnableIRQ(DVP_IRQn);
         DVP->CR1 |= RB_DVP_DMA_EN; DVP->CR0 |= RB_DVP_ENABLE;
+        last_dvp_event_ms = t384_millis();
         return false;
     }
     /* Bounded flush, including the status/data read required to clear ORE. */
@@ -886,11 +1211,16 @@ void t384_module_file_port_resume(void)
     mini2_dvp_configure();
     NVIC_EnableIRQ(DVP_IRQn);
     DVP->CR1 |= RB_DVP_DMA_EN; DVP->CR0 |= RB_DVP_ENABLE;
+    last_dvp_event_ms = t384_millis();
 }
 
 const char *t384_frame_source_name(void)
 {
-    return "mini2-dvp-y16-picture-v2";
+#if T384_DUALCORE
+    return "mini2-dvp-v5f-double-frame-v2";
+#else
+    return "mini2-dvp-y16-picture-v7";
+#endif
 }
 
 bool t384_frame_source_stream_ready(void)
@@ -948,6 +1278,12 @@ void t384_frame_source_get_stats(t384_frame_source_stats_t *out)
         out->dvp_fifo_overflows = source_stats.dvp_fifo_overflows;
         out->dvp_orphan_rows = source_stats.dvp_orphan_rows;
         out->dvp_bad_frames = source_stats.dvp_bad_frames;
+        out->dvp_restarts = source_stats.dvp_restarts;
+        out->dvp_restart_cr0 = source_stats.dvp_restart_cr0;
+        out->dvp_restart_cr1 = source_stats.dvp_restart_cr1;
+        out->dvp_restart_ifr = source_stats.dvp_restart_ifr;
+        out->dvp_module_probes = source_stats.dvp_module_probes;
+        out->dvp_module_rearms = source_stats.dvp_module_rearms;
         out->dvp_last_frame_rows = source_stats.dvp_last_frame_rows;
         out->dvp_last_frame_bytes = source_stats.dvp_last_frame_bytes;
         out->dvp_observed_bytes = source_stats.dvp_observed_bytes;

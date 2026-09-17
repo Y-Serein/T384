@@ -11,6 +11,8 @@
 #include "lwip/tcp.h"
 #include "t384_frame_pipeline.h"
 #include "t384_frame_source.h"
+#include "t384_dualcore.h"
+#include "t384_mini2_protocol.h"
 #include "t384_ncm.h"
 #include "t384_product_config.h"
 #include "t384_raw16.h"
@@ -25,6 +27,7 @@
 #define HTTP_POLL_INTERVAL 4u
 #define HTTP_IDLE_POLL_LIMIT 5u
 #define HTTP_RAW16_WRITE_BUDGET 16u
+#define HTTP_STATIC_WRITE_BUDGET 16u
 #define HTTP_RAW16_STALL_TIMEOUT_MS 10000u
 #define HTTP_RAW16_TARGET_BPS 4915200u
 #define HTTP_IDLE_PIPELINE_DRAIN_BUDGET 32u
@@ -76,9 +79,10 @@ static uint32_t raw16_rate_started_ms;
 static uint32_t raw16_rate_frames;
 static uint32_t raw16_rate_bytes;
 static uint32_t http_accept_rejects;
-static char diag_response[6080];
-static char calibration_response[4096];
-static uint8_t calibration_binary[4096];
+static char diag_response[6080 + (T384_DUALCORE ? 256 : 0)];
+/* The storage API caps payloads at 2 KiB; leave 256 B for HTTP headers. */
+static char calibration_response[T384_CAL_STORAGE_MAX_PAYLOAD + 256u];
+static uint8_t calibration_binary[T384_CAL_STORAGE_MAX_PAYLOAD];
 
 static const char status_response[] =
 #include "device_console_html.inc"
@@ -191,7 +195,7 @@ static size_t build_diag_response(void)
 
     const unsigned stream_active = raw16_client != NULL ? 1u : 0u;
     enum { DIAG_HEADER_RESERVE = 128 };
-    const int body_length = snprintf(
+    int body_length = snprintf(
         diag_response + DIAG_HEADER_RESERVE,
         sizeof(diag_response) - DIAG_HEADER_RESERVE,
         "pipeline=raw16-source-pipeline-v1\n"
@@ -215,6 +219,10 @@ static size_t build_diag_response(void)
         "mini2.control_ack_bad=%lu\n"
         "mini2.control_digital_off_status=%lu\n"
         "mini2.control_analog_off_status=%lu\n"
+        "mini2.detector_target_fps=%u\n"
+        "mini2.dvp_target_fps=%u\n"
+        "mini2.control_skipped_status=%u\n"
+        "mini2.digital_query_bytes=%u\n"
         "mini2.control_detector30_status=%lu\n"
         "mini2.control_dvp30_status=%lu\n"
         "mini2.control_tpd_set_status=%lu\n"
@@ -267,6 +275,8 @@ static size_t build_diag_response(void)
         "dvp.expected_width=%u\n"
         "dvp.expected_height=%u\n"
         "dvp.expected_fps=%u\n"
+        "dvp.dma_block_rows=%u\n"
+        "dvp.dma_block_bytes=%u\n"
         "dvp.frame_starts=%lu\n"
         "dvp.row_events=%lu\n"
         "dvp.frame_done_irqs=%lu\n"
@@ -275,6 +285,12 @@ static size_t build_diag_response(void)
         "dvp.fifo_overflows=%lu\n"
         "dvp.orphan_rows=%lu\n"
         "dvp.bad_frames=%lu\n"
+        "dvp.restarts=%lu\n"
+        "dvp.restart_cr0=%lu\n"
+        "dvp.restart_cr1=%lu\n"
+        "dvp.restart_ifr=%lu\n"
+        "dvp.module_probes=%lu\n"
+        "dvp.module_rearms=%lu\n"
         "dvp.last_frame_rows=%lu\n"
         "dvp.last_frame_bytes=%lu\n"
         "dvp.observed_bytes=%s\n"
@@ -349,6 +365,9 @@ static size_t build_diag_response(void)
         "dhcp.ack_err=%lu\n"
         "http.active_clients=%u\n"
         "http.accept_rejects=%lu\n"
+        "http.close_callback_isolation=1\n"
+        "http.static_window_refill=1\n"
+        "http.checksum_aligned_reads=1\n"
         "camera.initialized=%lu\n"
         "camera.sensor_pid=source-adapter\n"
         "camera.published_frames=%lu\n"
@@ -388,6 +407,10 @@ static size_t build_diag_response(void)
         (unsigned long)source.mini2_control_ack_bad,
         (unsigned long)source.mini2_control_digital_off_status,
         (unsigned long)source.mini2_control_analog_off_status,
+        T384_MINI2_DETECTOR_FPS,
+        T384_MINI2_DVP_FPS,
+        T384_MINI2_CONTROL_SKIPPED,
+        T384_MINI2_DIGITAL_RESPONSE_BYTES,
         (unsigned long)source.mini2_control_detector30_status,
         (unsigned long)source.mini2_control_dvp30_status,
         (unsigned long)source.mini2_control_tpd_set_status,
@@ -440,6 +463,8 @@ static size_t build_diag_response(void)
         T384_MINI2_DVP_WIDTH,
         T384_MINI2_DVP_HEIGHT,
         T384_MINI2_DVP_FPS,
+        T384_MINI2_DMA_BLOCK_ROWS,
+        T384_MINI2_DMA_BLOCK_BYTES,
         (unsigned long)source.dvp_frame_starts,
         (unsigned long)source.dvp_row_events,
         (unsigned long)source.dvp_frame_done_irqs,
@@ -448,6 +473,12 @@ static size_t build_diag_response(void)
         (unsigned long)source.dvp_fifo_overflows,
         (unsigned long)source.dvp_orphan_rows,
         (unsigned long)source.dvp_bad_frames,
+        (unsigned long)source.dvp_restarts,
+        (unsigned long)source.dvp_restart_cr0,
+        (unsigned long)source.dvp_restart_cr1,
+        (unsigned long)source.dvp_restart_ifr,
+        (unsigned long)source.dvp_module_probes,
+        (unsigned long)source.dvp_module_rearms,
         (unsigned long)source.dvp_last_frame_rows,
         (unsigned long)source.dvp_last_frame_bytes,
         source_bytes,
@@ -544,6 +575,26 @@ static size_t build_diag_response(void)
         return 0u;
     }
 
+#if T384_DUALCORE
+    const t384_dualcore_shared_t *shared = &t384_dualcore_shared;
+    const int extra = snprintf(
+        diag_response + DIAG_HEADER_RESERVE + body_length,
+        sizeof(diag_response) - DIAG_HEADER_RESERVE - (size_t)body_length,
+        "dualcore.v5f_booted=%lu\n"
+        "dualcore.v5f_initialized=%lu\n"
+        "dualcore.dtcm_access=%lu\n"
+        "dualcore.frame_banks=2\n"
+        "dualcore.frame_state=%lu\n"
+        "dualcore.frame_state1=%lu\n",
+        (unsigned long)__atomic_load_n(&shared->v5f_booted, __ATOMIC_ACQUIRE),
+        (unsigned long)__atomic_load_n(&shared->v5f_initialized, __ATOMIC_ACQUIRE),
+        (unsigned long)__atomic_load_n(&shared->v3f_frame_access_ok, __ATOMIC_ACQUIRE),
+        (unsigned long)__atomic_load_n(&shared->banks[0].state, __ATOMIC_ACQUIRE),
+        (unsigned long)__atomic_load_n(&shared->banks[1].state, __ATOMIC_ACQUIRE));
+    if (extra < 0 || (size_t)extra >= sizeof(diag_response) -
+        DIAG_HEADER_RESERVE - (size_t)body_length) return 0u;
+    body_length += extra;
+#endif
     char header[DIAG_HEADER_RESERVE];
     const int header_length = snprintf(
         header, sizeof(header),
@@ -611,12 +662,32 @@ static err_t close_client(http_client_t *client)
     if (client == NULL || client->pcb == NULL) {
         return ERR_OK;
     }
-    const err_t error = tcp_close(client->pcb);
+    struct tcp_pcb *pcb = client->pcb;
+    void *callback_arg = pcb->callback_arg;
+    const tcp_recv_fn recv = pcb->recv;
+    const tcp_sent_fn sent = pcb->sent;
+    const tcp_poll_fn poll = pcb->poll;
+    const tcp_err_fn err = pcb->errf;
+    const u8_t poll_interval = pcb->pollinterval;
+    /* A successful tcp_close can retain this PCB until FIN/ACK or timeout.
+     * Detach before close (which may free it), before reusing the HTTP slot. */
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
+    tcp_sent(pcb, NULL);
+    tcp_poll(pcb, NULL, 0u);
+    tcp_err(pcb, NULL);
+    const err_t error = tcp_close(pcb);
     if (error == ERR_OK) {
         release_client(client);
         return ERR_OK;
     }
     if (error == ERR_MEM) {
+        /* Failed close leaves the PCB owned by us; preserve retry callbacks. */
+        tcp_arg(pcb, callback_arg);
+        tcp_recv(pcb, recv);
+        tcp_sent(pcb, sent);
+        tcp_poll(pcb, poll, poll_interval);
+        tcp_err(pcb, err);
         client->closing = true;
         return ERR_OK;
     }
@@ -626,36 +697,35 @@ static err_t close_client(http_client_t *client)
 
 static err_t queue_static_chunk(http_client_t *client)
 {
-    if (client->static_inflight != 0u) {
-        return ERR_OK;
-    }
     if (client->static_offset >= client->static_length) {
+        if (client->static_inflight != 0u) return ERR_OK;
         client->closing = true;
         return close_client(client);
     }
 
-    const size_t left = client->static_length - client->static_offset;
-    const u16_t send_space = tcp_sndbuf(client->pcb);
-    if (send_space == 0u) {
-        return ERR_OK;
+    bool wrote = false;
+    for (unsigned writes = 0u; writes < HTTP_STATIC_WRITE_BUDGET &&
+         client->static_offset < client->static_length; ++writes) {
+        const size_t left = client->static_length - client->static_offset;
+        const u16_t send_space = tcp_sndbuf(client->pcb);
+        u16_t chunk = (u16_t)(left > TCP_MSS ? TCP_MSS : left);
+        if (chunk > send_space) chunk = send_space;
+        const u16_t inflight_space = (u16_t)(0xffffu - client->static_inflight);
+        if (chunk > inflight_space) chunk = inflight_space;
+        if (chunk == 0u) break;
+        const err_t write_error = tcp_write(
+            client->pcb, client->static_data + client->static_offset, chunk,
+            TCP_WRITE_FLAG_COPY);
+        if (write_error == ERR_MEM) break;
+        if (write_error != ERR_OK) {
+            abort_client(client);
+            return ERR_ABRT;
+        }
+        client->static_offset += chunk;
+        client->static_inflight = (u16_t)(client->static_inflight + chunk);
+        wrote = true;
     }
-    u16_t chunk = (u16_t)(left > 1460u ? 1460u : left);
-    if (chunk > send_space) {
-        chunk = send_space;
-    }
-    const err_t write_error = tcp_write(
-        client->pcb, client->static_data + client->static_offset, chunk,
-        TCP_WRITE_FLAG_COPY);
-    if (write_error == ERR_MEM) {
-        return ERR_OK;
-    }
-    if (write_error != ERR_OK) {
-        abort_client(client);
-        return ERR_ABRT;
-    }
-
-    client->static_offset += chunk;
-    client->static_inflight = chunk;
+    if (!wrote) return ERR_OK;
     const err_t output_error = tcp_output(client->pcb);
     if (output_error != ERR_OK && output_error != ERR_MEM) {
         abort_client(client);
@@ -834,9 +904,9 @@ static err_t http_sent(void *arg, struct tcp_pcb *pcb, u16_t length)
         if (length < client->static_inflight) {
             client->static_inflight =
                 (u16_t)(client->static_inflight - length);
-            return ERR_OK;
+        } else {
+            client->static_inflight = 0u;
         }
-        client->static_inflight = 0u;
         return queue_static_chunk(client);
     }
     if (client->closing) {
@@ -1019,22 +1089,32 @@ static err_t handle_calibration_request(http_client_t *client)
     if (content_length > 3072u) return send_json_status(client, 413, "Payload Too Large", "{\"error\":\"body_too_large\"}");
     if (body_len < content_length) return ERR_OK;
     body_len = content_length;
-    const bool is_device = strncmp(request, "GET /api/v1/device ", 20u) == 0;
-    const bool is_manifest = strncmp(request, "GET /api/v1/calibration/v1/manifest ", 37u) == 0;
-    const bool is_data = strncmp(request, "GET /api/v1/calibration/v1/data ", 33u) == 0;
-    if (is_device) return send_json_status(client, 200, "OK", "{\"product\":\"T384\",\"api\":\"v1\"}");
+    const bool is_device = strncmp(request, "GET /api/v1/device ", sizeof("GET /api/v1/device ") - 1u) == 0;
+    const bool is_manifest = strncmp(request, "GET /api/v1/calibration/v1/manifest ", sizeof("GET /api/v1/calibration/v1/manifest ") - 1u) == 0;
+    const bool is_data = strncmp(request, "GET /api/v1/calibration/v1/data ", sizeof("GET /api/v1/calibration/v1/data ") - 1u) == 0;
+    if (is_device) {
+        const int encoded = snprintf((char *)client->request, sizeof(client->request),
+            "{\"product\":\"T384\",\"api\":\"v1\",\"protocol_status\":\"legacy-chunk-stream\","
+            "\"sensor\":{\"native_width\":%u,\"native_height\":%u},"
+            "\"network\":{\"segment\":%u,\"device_ip\":\"192.168.%u.1\",\"configurable\":false,\"config_url\":\"/api/v1/network\"},"
+            "\"ota\":{\"supported\":false}}",
+            T384_RAW16_WIDTH, T384_RAW16_HEIGHT, T384_NCM_IPV4_C, T384_NCM_IPV4_C);
+        if (encoded < 0 || (size_t)encoded >= sizeof(client->request))
+            return send_json_status(client, 500, "Internal Server Error", "{}");
+        return send_json_status(client, 200, "OK", (const char *)client->request);
+    }
     if (is_manifest) {
         t384_cal_manifest_t manifest;
         const t384_cal_status_t status = t384_cal_storage_manifest(&manifest);
         if (status != T384_CAL_OK) return send_json_status(client, 404, "Not Found", "{\"error\":\"unavailable\"}");
-        const int n = snprintf(calibration_response, sizeof(calibration_response),
+        const int n = snprintf((char *)client->request, sizeof(client->request),
                                "{\"schema\":%lu,\"generation\":%lu,\"payload_len\":%lu,\"payload_crc32\":%lu,\"calibration_id\":%lu,\"model\":\"%s\",\"profile\":\"%s\",\"gain\":%u}",
                                (unsigned long)manifest.schema, (unsigned long)manifest.generation,
                                (unsigned long)manifest.payload_len, (unsigned long)manifest.payload_crc32,
                                (unsigned long)manifest.calibration_id, manifest.model, manifest.profile,
                                (unsigned)manifest.gain);
-        if (n <= 0 || (size_t)n >= sizeof(calibration_response)) return send_json_status(client, 500, "Internal Server Error", "{\"error\":\"encode\"}");
-        return send_json_status(client, 200, "OK", calibration_response);
+        if (n <= 0 || (size_t)n >= sizeof(client->request)) return send_json_status(client, 500, "Internal Server Error", "{\"error\":\"encode\"}");
+        return send_json_status(client, 200, "OK", (const char *)client->request);
     }
     if (is_data) {
         t384_cal_manifest_t manifest;
@@ -1047,7 +1127,7 @@ static err_t handle_calibration_request(http_client_t *client)
         return send_binary_status(client, 200, "OK", calibration_binary, manifest.payload_len);
     }
     int rc = -1;
-    if (strncmp(request, "PUT /api/v1/calibration/v1/data ", 33u) == 0) {
+    if (strncmp(request, "PUT /api/v1/calibration/v1/data ", sizeof("PUT /api/v1/calibration/v1/data ") - 1u) == 0) {
         if (cl == NULL) return send_json_status(client, 411, "Length Required", "{\"error\":\"content_length_required\"}");
         if (body_len > 3072u) return send_json_status(client, 413, "Payload Too Large", "{\"error\":\"body_too_large\"}");
         rc = storage_put_packet((const uint8_t *)body, body_len);
@@ -1193,7 +1273,33 @@ static err_t http_receive(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
     char request[64] = {0};
     const u16_t request_copy = client->request_length > 63u ? 63u : (u16_t)client->request_length;
     memcpy(request, client->request, request_copy);
-    if (request_matches_path(request, request_copy, "/diag")) {
+    if (request_matches_path(request, request_copy, "/api/v1/network")) {
+        const int n = snprintf((char *)client->request, sizeof(client->request),
+            "{\"mode\":\"fixed_private_subnet\",\"segment\":%u,\"device_ip\":\"192.168.%u.1\","
+            "\"prefix_length\":24,\"dhcp_first\":\"192.168.%u.2\",\"dhcp_last\":\"192.168.%u.20\","
+            "\"default_segment\":17,\"configurable\":false}",
+            T384_NCM_IPV4_C, T384_NCM_IPV4_C, T384_NCM_IPV4_C, T384_NCM_IPV4_C);
+        if (n < 0 || (size_t)n >= sizeof(client->request))
+            return send_json_status(client, 500, "Internal Server Error", "{}");
+        return send_json_status(client, 200, "OK", (const char *)client->request);
+    } else if (strncmp(request, "PUT /api/v1/network ", sizeof("PUT /api/v1/network ") - 1u) == 0) {
+        return send_json_status(client, 501, "Not Implemented", "{\"ok\":false,\"error\":{\"code\":\"network_persistence_unavailable\",\"message\":\"Network storage and recovery are not implemented\"}}");
+    } else if (strncmp(request, "GET /api/", sizeof("GET /api/") - 1u) == 0) {
+        return send_json_status(client, 404, "Not Found", "{\"ok\":false,\"error\":{\"code\":\"not_found\",\"message\":\"API not implemented\"}}");
+    } else if (request_matches_path(request, request_copy, "/hotspot-detect.html") ||
+               request_matches_path(request, request_copy, "/library/test/success.html") ||
+               request_matches_path(request, request_copy, "/success.html") ||
+               request_matches_path(request, request_copy, "/generate_204") ||
+               request_matches_path(request, request_copy, "/generate204") ||
+               request_matches_path(request, request_copy, "/gen_204") ||
+               request_matches_path(request, request_copy, "/connecttest.txt") ||
+               request_matches_path(request, request_copy, "/ncsi.txt")) {
+        const int n = snprintf((char *)client->request, sizeof(client->request),
+            "HTTP/1.1 302 Found\r\nLocation: http://192.168.%u.1/\r\n"
+            "Cache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", T384_NCM_IPV4_C);
+        if (n < 0 || (size_t)n >= sizeof(client->request)) return ERR_VAL;
+        return send_and_close(client, (const char *)client->request, (size_t)n);
+    } else if (request_matches_path(request, request_copy, "/diag")) {
         const size_t length = build_diag_response();
         if (length != 0u) {
             return send_and_close(client, diag_response, length);

@@ -48,11 +48,16 @@ static inline uint16_t t384_lwip_chksum_copy(void *destination,
     while (length > 7u) {
         uint32_t first_word;
         uint32_t second_word;
-        memcpy(&first_word, src, sizeof(first_word));
+        /* The byte/halfword prefix above aligns every eight-byte iteration.
+         * Keep alias-safe memcpy, but avoid byte loads and stack assembly on
+         * the V3F when reading a frame from the V5F memory banks. */
+        const uint8_t *aligned_src =
+            (const uint8_t *)__builtin_assume_aligned(src, 4u);
+        memcpy(&first_word, aligned_src, sizeof(first_word));
         memcpy(dst, &first_word, sizeof(first_word));
         src += 4;
         dst += 4;
-        memcpy(&second_word, src, sizeof(second_word));
+        memcpy(&second_word, aligned_src + 4u, sizeof(second_word));
         memcpy(dst, &second_word, sizeof(second_word));
         src += 4;
         dst += 4;

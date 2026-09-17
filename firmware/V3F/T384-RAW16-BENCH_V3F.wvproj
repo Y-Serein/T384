@@ -8,7 +8,7 @@
 			"toolchain": "RISC-V",
 			"series": "CH32H417",
 			"rtos": "NoneOS",
-				"mcu": "CH32H417WEU",
+			"mcu": "CH32H417WEU",
 			"description": "ROM(byte): 256K, SRAM(byte): 64K, CHIP PINS: 64, GPIO PORTS: 51.\\nWCH CH32V3 series of mainstream MCUs covers the needs of a large variety of applications in the industrial,medical and consumer markets. High performance with first-class peripherals and low-power,low-voltage operation is paired with a high level of integration at accessible prices with a simple architecture and easy-to-use tools.",
 			"tempratureScope": "",
 			"artifactType": "executable",
@@ -61,11 +61,11 @@
 			"kernelName": "V3F",
 			"isMaster": true,
 			"debugOptions": {
-				"dualCoreDebug": false,
+				"dualCoreDebug": true,
 				"slaveGDBPort": 3334,
 				"masterGDBPort": 3333
 			},
-			"mate": "",
+			"mate": "../V5F",
 			"mergedOptions": {
 				"enabled": false,
 				"mergedList": {
@@ -180,7 +180,9 @@
 						"do_not_search_system_directories": false,
 						"preprocess_only": false,
 						"defined_symbols": [
-							"Core_V3F"
+							"Core_V3F",
+							"T384_DUALCORE=1",
+							"Run_Core=2"
 						],
 						"undefined_symbols": []
 					},
@@ -396,7 +398,7 @@
 		"clkSpeed": "High",
 		"debug_interface_mode": "1-wire serial",
 		"erase": false,
-		"program": true,
+		"program": false,
 		"verify": true,
 		"reset": true,
 		"sdiPrintf": false,

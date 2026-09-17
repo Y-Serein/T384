@@ -7,11 +7,8 @@
 ## 1. 项目概览
 
 - 项目目标：基于 CH32H417 V5F 接收 MINI2 384/640 的 DVP 数据，通过 USB NCM 提供本地 Web 测温与成像界面。
-- 当前阶段：V3F NCM/HTTP 与 OV2640 验证线已经完成 Windows 上板闭环；正式
-  `firmware/` 工程已用 DMA 等效源完成 60 秒 `27.750 FPS / 6.138 MB/s` 严格验收，
-  超过 384×288 RAW16 的 25.5 FPS 目标。真实 MINI2 DVP 仍未接入。
-- 当前实现尚未接入真实 MINI2 DVP、V5F 数据面或正式测温链，不能把 RAW16 bench
-  写成 T384/T640 产品固件完成。
+- 当前阶段：正式firmware已按用户B方案运行真实MINI2双核链路，V5F采集/V3F网络。双帧v2两核启动及五段内存访问自检通过，Windows原生60秒1174完整帧/19.567FPS，用户目标≥25完整FPS尚未达成。当前继续TCP复制效率与持续流/重连闭环；不能把DMA等效源历史27.750FPS成绩当真实MINI2成绩。
+- 正式测温、手机和其他PC系统、24小时尚未验证，不能写成T384/T640产品完成。当前实现和内存账本见firmware/README.md，最新状态见HANDOFF.md。
 - 目标平台：iPhone、Android 和 PC；具体 PC 系统矩阵尚未冻结。
 - 当前产品范围：T384/T640；除非用户明确变更，不启动 256×192 SKU。
 - 优先级：电气安全与数据正确性 > 协议合法性与跨平台兼容 > 可验证性 > 小改动 > 吞吐与延迟 > UI/重构。
@@ -53,7 +50,7 @@
 
 当前 NCM 与 RAW16 主工程使用 MRS 的 `CH32H417WEU` 芯片项，对应目标器件
 `CH32H417WEU6`；该项已由 WCH Petros_DVP 官方板工程和本地 V1.6 数据手册交叉确认。
-正式与测试 RAW16 工程只构建/下载 V3F，并禁止 `Erase All` 与 `Clear CodeFlash`；
+用户已确认B方案：正式RAW16工程Build V3F网络核与V5F采集核；已验证测试快照仍只构建V3F。双核已完成MRS目标构建/合并产物检查，用户已上板出图；单帧HTTP稳定性修复60秒/3次重连通过，双帧v2完整帧19.567FPS未满足≥25FPS。新优化必须确认实际下载身份再测，不沿用旧产物放行。两者均禁止 `Erase All` 与 `Clear CodeFlash`；
 `tests/ch32h417_t384_base/` 仍保留厂商 QEU 参考元数据，不得作为目标板下载工程。
 
 MRS 工程的 `.wvsln/.wvproj/.project/.cproject` 必须使用相对 linked folders，不得写入
@@ -61,12 +58,12 @@ MRS 工程的 `.wvsln/.wvproj/.project/.cproject` 必须使用相对 linked fold
 本机生成缓存，不属于可迁移源码；迁移
 后只需一次性丢弃旧缓存，日常源码/头文件修改使用增量 Build，不要求每次 Clean。
 
-首次 MRS 构建闭环后，必须在这里补清：
+已完成双核目标构建闭环：
 
-- 工具链和版本。
-- V5F/V3F 使用边界。
-- 一条可复现构建命令。
-- 正式固件产物路径。
+- MRS 2.5.0；现有WCH xPack RISC-V Embedded GCC 12.2.0，两个核使用RV32IMAC/WCH扩展及有效O2。
+- V5F采集DVP/DMA/UART，V3F处理USB NCM/lwIP/HTTP；测试快照仍为历史单核。
+- MRS先生成两核obj makefile后，Windows项目目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/build_dualcore.ps1`；脚本使用已安装MRS工具链重建、合并并检查，不下载/擦除。
+- 产物：`firmware/{V3F,V5F}/obj/T384-RAW16-BENCH_{V3F,V5F}.{map,hex,bin}`；双核合并文件 `firmware/V5F/obj/Merge.bin`。
 
 ### 测试与静态检查
 

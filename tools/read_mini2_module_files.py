@@ -26,8 +26,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Device:
     def __init__(self, base: str):
-        if base.rstrip("/") != "http://192.168.18.1":
-            raise ValueError("This bring-up tool only targets http://192.168.18.1")
+        if base.rstrip("/") not in ("http://192.168.17.1", "http://192.168.18.1"):
+            raise ValueError("This bring-up tool only targets the local USB device at 192.168.17.1 or legacy 192.168.18.1")
         self.base = base.rstrip("/") + "/api/v1/module-files/"
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
@@ -137,7 +137,7 @@ def read_one(device: Device, table_id: str, output: Path, proof: bool) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--table", choices=IDS, default="nuct-high")
-    parser.add_argument("--all", action="store_true", help="read eight IDs; first prove known WN2256 NUC-T")
+    parser.add_argument("--all", action="store_true", help="read eight IDs; first verify this module's NUC-T transaction")
     parser.add_argument("--expect-wn2256-nuct", action="store_true")
     parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1]/"out/radiometry/mini2-uart")
     args = parser.parse_args()
@@ -146,14 +146,14 @@ def main() -> int:
     output = args.output / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     output.mkdir(parents=True, exist_ok=False)
     print(f"Output: {output}")
-    device = Device("http://192.168.18.1")
+    device = Device("http://192.168.17.1")
     success = True
     for table_id in IDS if args.all else (args.table,):
-        proof = (args.all or args.expect_wn2256_nuct) and table_id == "nuct-high"
+        proof = args.expect_wn2256_nuct and table_id == "nuct-high"
         ok = read_one(device, table_id, output, proof)
         success = success and ok
-        if not ok and proof:
-            print("Stopped: known NUC-T proof failed; no further table requests sent")
+        if not ok and (proof or (args.all and table_id == "nuct-high")):
+            print("Stopped: first NUC-T verification failed; no further table requests sent")
             break
     return 0 if success else 1
 

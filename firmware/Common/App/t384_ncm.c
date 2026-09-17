@@ -11,6 +11,7 @@
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
 #include "t384_product_config.h"
+#include "t384_dns.h"
 #include "tusb.h"
 
 #define INIT_IP4(a, b, c, d) { PP_HTONL(LWIP_MAKEU32(a, b, c, d)) }
@@ -38,13 +39,33 @@ static dhcp_entry_t dhcp_entries[T384_NCM_CLIENT_COUNT] = {
 };
 
 static const dhcp_config_t dhcp_config = {
-    .router = INIT_IP4(0, 0, 0, 0),
+    .router = INIT_IP4(T384_NCM_IPV4_A, T384_NCM_IPV4_B, T384_NCM_IPV4_C, T384_NCM_DEVICE_HOST),
     .port = 67,
-    .dns = INIT_IP4(0, 0, 0, 0),
+    .dns = INIT_IP4(T384_NCM_IPV4_A, T384_NCM_IPV4_B, T384_NCM_IPV4_C, T384_NCM_DEVICE_HOST),
     .domain = NULL,
     .num_entry = T384_NCM_CLIENT_COUNT,
     .entries = dhcp_entries,
 };
+
+static void dns_receive(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                         const ip_addr_t *source, u16_t port)
+{
+    (void)arg;
+    if (p == NULL) return;
+    uint8_t packet[160];
+    const uint8_t address[] = {T384_NCM_IPV4_A, T384_NCM_IPV4_B, T384_NCM_IPV4_C, T384_NCM_DEVICE_HOST};
+    const size_t length = p->tot_len;
+    size_t response_length = 0u;
+    if (length <= sizeof(packet) - 16u && pbuf_copy_partial(p, packet, (u16_t)length, 0u) == length)
+        response_length = t384_dns_reply(packet, length, sizeof(packet), address);
+    pbuf_free(p);
+    if (!response_length) return;
+    struct pbuf *response = pbuf_alloc(PBUF_TRANSPORT, (u16_t)response_length, PBUF_RAM);
+    if (response == NULL) return;
+    if (pbuf_take(response, packet, (u16_t)response_length) == ERR_OK)
+        (void)udp_sendto(pcb, response, source, port);
+    pbuf_free(response);
+}
 
 static void discard_received_frame(void)
 {
@@ -150,6 +171,17 @@ bool t384_ncm_init(void)
     if (dhserv_init(&dhcp_config) != ERR_OK) {
         return false;
     }
+    for (unsigned i = 0u; i < T384_NCM_CLIENT_COUNT; ++i) {
+        IP4_ADDR(&dhcp_entries[i].addr, T384_NCM_IPV4_A, T384_NCM_IPV4_B,
+                 T384_NCM_IPV4_C, T384_NCM_FIRST_CLIENT_HOST + i);
+        dhcp_entries[i].lease = 86400u;
+    }
+    struct udp_pcb *dns = udp_new_ip_type(IPADDR_TYPE_V4);
+    if (dns == NULL) return false;
+    if (udp_bind(dns, (const ip_addr_t *)&device_ip, 53u) != ERR_OK) {
+        udp_remove(dns); return false;
+    }
+    udp_recv(dns, dns_receive, NULL);
     if (t384_http_status_init() != ERR_OK) {
         return false;
     }

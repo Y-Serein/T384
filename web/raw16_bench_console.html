@@ -114,6 +114,13 @@
 
     .viewer { position: relative; aspect-ratio: 256 / 192; overflow: hidden; display: grid; place-items: center; background: #111315; }
     .viewer canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
+    .viewer #annotations { position: absolute; inset: 0; touch-action: none; cursor: crosshair; }
+    .viewer-overlay { pointer-events: none; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); }
+    .toolbar label { color: var(--sub); font-size: 12px; }
+    select, input[type="number"] { min-height: 44px; padding: 8px; border: 1px solid var(--strong); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; max-width: 100%; }
+    input:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .coordinates { display: block; margin-top: 6px; color: var(--sub); font: 11px var(--mono); overflow-wrap: anywhere; }
     .viewer-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #9aa0a6; font: 12px var(--mono); letter-spacing: .06em; }
     .viewer-overlay { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; }
     .viewer-overlay .pill { border-color: #373b3f; background: rgba(17,19,21,.78); color: #f2f3f4; backdrop-filter: blur(8px); }
@@ -204,13 +211,14 @@
   <div class="shell">
     <header class="topbar">
       <div class="brand"><span class="mark" aria-hidden="true"></span><span>T384 实时控制台</span></div>
-      <span class="device">USB NCM · 192.168.18.1</span>
+      <span class="device" id="deviceAddress">USB NCM · 当前设备</span>
     </header>
 
     <nav class="nav" role="tablist" aria-label="设备功能">
       <button class="tab" id="tab-live" role="tab" aria-selected="true" aria-controls="panel-live" type="button">实时</button>
       <button class="tab" id="tab-trend" role="tab" aria-selected="false" aria-controls="panel-trend" tabindex="-1" type="button">趋势</button>
       <button class="tab" id="tab-diag" role="tab" aria-selected="false" aria-controls="panel-diag" tabindex="-1" type="button">诊断</button>
+      <button class="tab" id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1" type="button">设备</button>
     </nav>
 
     <main>
@@ -235,9 +243,18 @@
           <div class="viewer">
             <div class="viewer-placeholder" id="streamPlaceholder">WAITING FOR STREAM</div>
             <canvas id="stream" width="256" height="192" role="img" aria-label="RAW16 实时画面"></canvas>
+            <canvas id="annotations" width="256" height="192" tabindex="0" aria-label="拖拽选择聚焦区域，按 Escape 清除"></canvas>
             <div class="viewer-overlay"><span class="pill warn" id="framePill">正在连接</span><span class="pill" id="formatPill">待识别</span></div>
           </div>
           <div class="viewer-foot"><span class="viewer-state" id="frameState">正在建立实时流</span><strong class="viewer-rate" id="frameFps">-- FPS</strong></div>
+          <div class="toolbar">
+            <label for="paletteSelect">色板</label><select id="paletteSelect"><option value="rainbow">彩虹</option><option value="white">白热</option><option value="black">黑热</option><option value="iron">铁红</option></select>
+            <label><input id="showExtrema" type="checkbox" checked> 极值位置</label>
+            <button class="button small" id="centerRoiBtn" type="button">中心区域</button>
+            <button class="button small" id="clearRoiBtn" type="button">清除区域</button>
+            <button class="button small" id="snapshotBtn" type="button" disabled>保存图片</button>
+          </div>
+          <p class="copy body" id="roiSummary" aria-live="polite">拖拽选择聚焦区域；坐标以原生画面为准。</p>
         </article>
 
         <article class="card" aria-labelledby="metricTitle">
@@ -253,14 +270,16 @@
         <article class="card" aria-labelledby="temperatureTitle">
           <div class="card-head"><div><h2 id="temperatureTitle">Y16 温度观察</h2><p class="copy">伪彩与温度统计来自同一完整 Y16 帧。</p></div></div>
           <dl class="metrics">
-            <div><dt>中心温度</dt><dd id="centerTemperature">-- <small>°C</small></dd></div>
-            <div><dt>最低温度</dt><dd id="minimumTemperature">-- <small>°C</small></dd></div>
-            <div><dt>最高温度</dt><dd id="maximumTemperature">-- <small>°C</small></dd></div>
+            <div><dt>中心 5×5 ROI 温度</dt><dd id="centerTemperature">-- <small>°C</small></dd></div>
+            <div><dt>全图最低温度</dt><dd id="minimumTemperature">-- <small>°C</small></dd><span class="coordinates" id="minimumPosition">--</span></div>
+            <div><dt>全图最高温度</dt><dd id="maximumTemperature">-- <small>°C</small></dd><span class="coordinates" id="maximumPosition">--</span></div>
             <div><dt>中心 Y16</dt><dd id="centerY16">--</dd></div>
+            <div><dt>聚焦区域平均温度</dt><dd id="roiTemperature">-- <small>°C</small></dd></div>
+            <div><dt>聚焦区域平均 Y16</dt><dd id="roiY16">--</dd></div>
           </dl>
         </article>
 
-        <div class="note"><strong>测温边界：</strong>TPD/Y16 模式暂用项目既有实验线性映射，页面会明确标为“实验温度”；它不是 KT/BT/NUC-T 辐射测温结果。若固件回退到 Picture/UYVY，页面只显示伪彩并禁用温度读数。</div>
+        <div class="note"><strong>测温边界：</strong>只有固件声明有效实验模型时才显示实验温度，不代表 OEM 测温。384 尚无有效模型时标记 Y16 极值而非最高/最低温；Picture/UYVY 不提供测温或 Y16 统计。</div>
       </section>
 
       <section id="panel-trend" role="tabpanel" aria-labelledby="tab-trend" hidden>
@@ -326,6 +345,18 @@
         </article>
 
         <div class="note warn" id="diagNote"><strong>连接状态：</strong><span id="diagMessage">正在读取设备状态。</span> <button class="button small" id="diagRetryBtn" type="button" hidden>立即重试</button></div>
+      </section>
+      <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+        <div class="page-head"><div><p class="eyebrow">DEVICE MANAGEMENT</p><h1>设备与更新</h1><p class="lead">按设备实际能力开放设置，不猜测 USB 身份或升级格式。</p></div></div>
+        <article class="card"><div class="card-head"><div><h2>网络与 USB</h2><p class="copy">统一协议目标：192.168.17.1/24 · ir.sipeed.com</p></div></div>
+          <div class="body"><p id="networkInfo">正在核查当前网络。</p><p id="usbInfo" class="copy">USB CDC-NCM；产品 VID/PID 尚未冻结。</p><p class="copy" id="capabilityInfo">正在查询设备能力。</p></div>
+          <div class="toolbar"><a class="button" id="ipFallback" href="/">当前设备 IP 入口</a><a class="button" href="http://ir.sipeed.com/">统一域名入口</a></div>
+          <div class="body copy">域名入口仅在固件提供本地 DNS、且主机使用该 DNS 时有效；当前版本以设备 IP 为准。网段持久化配置尚未接入。</div>
+        </article>
+        <article class="card"><div class="card-head"><div><h2>固件更新</h2><p class="copy">升级能力、文件格式和限制来自 /api/v1/device。</p></div></div>
+          <div class="body"><p id="otaInfo" role="status">正在检测升级能力。</p><p class="copy">当前工程没有安全 OTA 后端；不能通过网页上传 HEX/BIN。暂用 MRS 正式 V3F 工程下载，禁止 Erase All 和 Clear CodeFlash。升级不得覆盖标定区。</p></div>
+          <div class="toolbar"><button class="button" id="otaUploadBtn" type="button" disabled>网页升级未接入</button><button class="button" id="capabilityRetryBtn" type="button">重新检测</button></div>
+        </article>
       </section>
     </main>
   </div>
@@ -409,6 +440,11 @@
     let browserDiscardedFrames = 0;
     let browserProcessMs = 0;
     let rawImageData = null;
+    let lastDisplayFrame = null;
+    let focusRoi = null;
+    let dragStart = null;
+    let dragPointer = null;
+    let lastExtrema = null;
     let clearConfirmTimer = 0;
 
     const fmt = value => Number(value || 0).toLocaleString('en-US');
@@ -737,6 +773,92 @@
         : '-- <small>°C</small>';
     }
 
+    function regionStats(frame, roi) {
+      let sum = 0, count = 0;
+      for (let y = roi.y0; y <= roi.y1; y += 1) {
+        for (let x = roi.x0; x <= roi.x1; x += 1) {
+          const offset = (y * RAW16_WIDTH + x) * 2;
+          sum += (frame[offset] << 8) | frame[offset + 1];
+          count += 1;
+        }
+      }
+      return sum / count;
+    }
+
+    function drawAnnotations() {
+      const canvas = $('annotations'), ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!lastDisplayFrame || !streamLoaded) return;
+      if (focusRoi) {
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+        ctx.fillStyle = 'rgba(255,255,255,.10)';
+        const r = focusRoi;
+        ctx.fillRect(r.x0, r.y0, r.x1 - r.x0 + 1, r.y1 - r.y0 + 1);
+        ctx.strokeRect(r.x0 + .5, r.y0 + .5, r.x1 - r.x0, r.y1 - r.y0);
+      }
+      if (!$('showExtrema').checked || !lastExtrema) return;
+      const thermal = Number.isFinite(y16CountsPerC);
+      for (const [name, pixel, raw, color] of [
+        ['L', lastExtrema.minPixel, lastExtrema.minimum, '#5bdaff'],
+        ['H', lastExtrema.maxPixel, lastExtrema.maximum, '#ff796a']]) {
+        const x = pixel % RAW16_WIDTH, y = Math.floor(pixel / RAW16_WIDTH);
+        ctx.strokeStyle = color; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x - 4, y); ctx.lineTo(x + 4, y);
+        ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4); ctx.stroke();
+        const label = name + ' ' + (thermal ? ((raw - y16ZeroC) / y16CountsPerC).toFixed(1) + '°C 实验' : raw + ' Y16');
+        ctx.font = '10px monospace';
+        const width = ctx.measureText(label).width + 6;
+        const left = Math.max(0, Math.min(RAW16_WIDTH - width, x + 6));
+        const top = Math.max(12, Math.min(RAW16_HEIGHT - 3, y - 6));
+        ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fillRect(left, top - 11, width, 14);
+        ctx.fillStyle = color; ctx.fillText(label, left + 3, top);
+      }
+    }
+
+    function updateRoi() {
+      const valid = lastDisplayFrame && streamPixelFormat === PIXEL_FORMAT_Y16_BE && focusRoi;
+      const mean = valid ? regionStats(lastDisplayFrame, focusRoi) : NaN;
+      showTemperature('roiTemperature', mean);
+      $('roiY16').textContent = Number.isFinite(mean) ? mean.toFixed(1) : '--';
+      $('roiSummary').textContent = focusRoi
+        ? `区域 (${focusRoi.x0},${focusRoi.y0}) → (${focusRoi.x1},${focusRoi.y1}) · ${focusRoi.x1 - focusRoi.x0 + 1}×${focusRoi.y1 - focusRoi.y0 + 1} · 原生坐标`
+        : '拖拽选择聚焦区域；坐标以原生画面为准。';
+      drawAnnotations();
+    }
+
+    function pointerPixel(event) {
+      const rect = $('annotations').getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(RAW16_WIDTH - 1, Math.floor((event.clientX - rect.left) * RAW16_WIDTH / rect.width))),
+        y: Math.max(0, Math.min(RAW16_HEIGHT - 1, Math.floor((event.clientY - rect.top) * RAW16_HEIGHT / rect.height)))
+      };
+    }
+
+    async function detectCapabilities() {
+      $('deviceAddress').textContent = 'USB NCM · ' + location.host;
+      $('ipFallback').href = location.origin + '/';
+      $('networkInfo').textContent = '当前入口：' + location.origin + '/';
+      $('capabilityInfo').textContent = '正在查询设备能力。';
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2500);
+      try {
+        const response = await fetch('/api/v1/device', {cache: 'no-store', signal: controller.signal});
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const info = await response.json();
+        $('capabilityInfo').textContent = info.formats ? '设备已提供统一能力列表。当前画面仍使用私有分块协议。' : '当前为私有帧流版本，未声明统一 formats[]，不宣称协议完全合规。';
+        if (info.network) {
+          $('networkInfo').textContent = '设备 IP：' + info.network.device_ip + ' /24';
+          if (/^192\.168\.\d{1,3}\.1$/.test(info.network.device_ip)) $('ipFallback').href = 'http://' + info.network.device_ip + '/';
+        }
+        $('otaInfo').textContent = info.ota?.supported === true
+          ? '设备声明支持 OTA，但当前网页上传流程未接入；请勿使用其他型号固件。'
+          : '当前固件未提供网页 OTA。';
+      } catch (error) {
+        $('capabilityInfo').textContent = '能力查询失败：' + (error.name === 'AbortError' ? '超时' : error.message);
+        $('otaInfo').textContent = '升级能力未知，禁止上传。';
+      } finally { clearTimeout(timeout); }
+    }
+
     function renderRaw16Frame(frame) {
       const canvas = $('stream');
       const context = canvas.getContext('2d', { alpha: false });
@@ -748,24 +870,29 @@
       if (streamPixelFormat === PIXEL_FORMAT_Y16_BE) {
         let minimum = 0xFFFF;
         let maximum = 0;
+        let minPixel = 0, maxPixel = 0;
         for (let pixel = 0; pixel < pixels.length; pixel += 1) {
           const raw = (frame[pixel * 2] << 8) | frame[pixel * 2 + 1];
-          if (raw < minimum) minimum = raw;
-          if (raw > maximum) maximum = raw;
+          if (raw < minimum) { minimum = raw; minPixel = pixel; }
+          if (raw > maximum) { maximum = raw; maxPixel = pixel; }
         }
         const span = Math.max(1, maximum - minimum);
         for (let pixel = 0; pixel < pixels.length; pixel += 1) {
           const raw = (frame[pixel * 2] << 8) | frame[pixel * 2 + 1];
           pixels[pixel] = RAW16_PALETTE[Math.round((raw - minimum) * 255 / span)];
         }
-        const centerPixel = Math.floor(RAW16_HEIGHT / 2) * RAW16_WIDTH +
-          Math.floor(RAW16_WIDTH / 2);
-        const center = (frame[centerPixel * 2] << 8) | frame[centerPixel * 2 + 1];
+        const cx = Math.floor(RAW16_WIDTH / 2), cy = Math.floor(RAW16_HEIGHT / 2);
+        const center = regionStats(frame, {x0: Math.max(0, cx - 2), y0: Math.max(0, cy - 2), x1: Math.min(RAW16_WIDTH - 1, cx + 2), y1: Math.min(RAW16_HEIGHT - 1, cy + 2)});
         showTemperature('centerTemperature', center);
         showTemperature('minimumTemperature', minimum);
         showTemperature('maximumTemperature', maximum);
-        $('centerY16').textContent = String(center);
+        $('centerY16').textContent = center.toFixed(1);
+        lastExtrema = {minimum, maximum, minPixel, maxPixel};
+        $('minimumPosition').textContent = `(${minPixel % RAW16_WIDTH},${Math.floor(minPixel / RAW16_WIDTH)}) · Y16 ${minimum}`;
+        $('maximumPosition').textContent = `(${maxPixel % RAW16_WIDTH},${Math.floor(maxPixel / RAW16_WIDTH)}) · Y16 ${maximum}`;
       } else {
+        lastExtrema = null;
+        $('minimumPosition').textContent = '--'; $('maximumPosition').textContent = '--';
         for (let pixel = 0; pixel < pixels.length; pixel += 1) {
           pixels[pixel] = RAW16_PALETTE[frame[pixel * 2 + 1]];
         }
@@ -775,6 +902,10 @@
         $('centerY16').textContent = '--';
       }
       context.putImageData(rawImageData, 0, 0);
+      if (!lastDisplayFrame || lastDisplayFrame.length !== frame.length) lastDisplayFrame = new Uint8Array(frame.length);
+      lastDisplayFrame.set(frame);
+      $('snapshotBtn').disabled = false;
+      updateRoi();
     }
 
     function acceptRaw16Frame(frame, frameIndex) {
@@ -803,6 +934,7 @@
         $('streamPlaceholder').hidden = true;
         setPill($('framePill'), '画面已连接', 'ok');
       }
+      drawAnnotations();
       $('frameState').textContent = '完整分块帧 · 序号缺口 ' + fmt(browserSequenceGaps) +
         ' · 序列异常 ' + fmt(browserSequenceErrors) + ' · 丢弃 ' +
         fmt(browserDiscardedFrames) + ' · 处理 ' + browserProcessMs.toFixed(1) + ' ms';
@@ -939,7 +1071,7 @@
           .split(',').map(Number);
         y16ZeroC = linearParameters[0] / 100;
         y16CountsPerC = linearParameters[1] / 100;
-        if (temperatureModel !== 'experimental-blackbody-2point-v1' ||
+        if (streamWidth !== 256 || streamHeight !== 192 || temperatureModel !== 'experimental-blackbody-2point-v1' ||
             linearParameters.length !== 2 || !linearParameters.every(Number.isFinite) ||
             y16CountsPerC <= 0) {
           y16ZeroC = NaN;
@@ -956,6 +1088,13 @@
         canvas.height = RAW16_HEIGHT;
         canvas.setAttribute('aria-label', RAW16_WIDTH + '×' + RAW16_HEIGHT + ' RAW16 实时画面');
         rawImageData = null;
+        lastDisplayFrame = null;
+        focusRoi = null;
+        lastExtrema = null;
+        $('annotations').width = RAW16_WIDTH;
+        $('annotations').height = RAW16_HEIGHT;
+        $('stream').parentElement.style.aspectRatio = RAW16_WIDTH + '/' + RAW16_HEIGHT;
+        updateRoi();
         frame = new Uint8Array(RAW16_FRAME_BYTES);
         if (!response.body) throw new Error('浏览器不支持流式读取');
         const reader = response.body.getReader();
@@ -1050,6 +1189,12 @@
         controller.abort();
       }
       streamLoaded = false;
+      lastDisplayFrame = null;
+      lastExtrema = null;
+      $('snapshotBtn').disabled = true;
+      ['centerTemperature', 'minimumTemperature', 'maximumTemperature', 'roiTemperature'].forEach(id => showTemperature(id, NaN));
+      ['centerY16', 'roiY16', 'minimumPosition', 'maximumPosition'].forEach(id => { $(id).textContent = '--'; });
+      drawAnnotations();
       setPill($('framePill'), '正在重连', 'warn');
       $('frameState').textContent = message;
       $('streamPlaceholder').hidden = false;
@@ -1106,6 +1251,50 @@
     $('recordBtn').addEventListener('click', toggleRecording);
     $('exportBtn').addEventListener('click', exportCsv);
     $('clearBtn').addEventListener('click', requestClearRecording);
+    const overlay = $('annotations');
+    overlay.addEventListener('pointerdown', event => {
+      if (!streamLoaded || dragPointer !== null || event.button !== 0) return;
+      event.preventDefault(); dragPointer = event.pointerId;
+      dragStart = pointerPixel(event); overlay.setPointerCapture(event.pointerId);
+      focusRoi = {x0: dragStart.x, y0: dragStart.y, x1: dragStart.x, y1: dragStart.y}; updateRoi();
+    });
+    overlay.addEventListener('pointermove', event => {
+      if (dragPointer !== event.pointerId) return;
+      const p = pointerPixel(event);
+      focusRoi = {x0: Math.min(p.x, dragStart.x), y0: Math.min(p.y, dragStart.y), x1: Math.max(p.x, dragStart.x), y1: Math.max(p.y, dragStart.y)};
+      updateRoi();
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) overlay.addEventListener(type, () => { dragPointer = null; dragStart = null; });
+    const clearRoi = () => { focusRoi = null; dragStart = null; dragPointer = null; updateRoi(); };
+    overlay.addEventListener('keydown', event => { if (event.key === 'Escape') clearRoi(); });
+    $('clearRoiBtn').addEventListener('click', clearRoi);
+    $('centerRoiBtn').addEventListener('click', () => {
+      if (!streamLoaded) return;
+      const cx = Math.floor(RAW16_WIDTH / 2), cy = Math.floor(RAW16_HEIGHT / 2);
+      focusRoi = {x0: Math.max(0, cx - 16), y0: Math.max(0, cy - 16), x1: Math.min(RAW16_WIDTH - 1, cx + 15), y1: Math.min(RAW16_HEIGHT - 1, cy + 15)};
+      updateRoi();
+    });
+    $('showExtrema').addEventListener('change', drawAnnotations);
+    $('paletteSelect').addEventListener('change', () => {
+      const mode = $('paletteSelect').value, bytes = new Uint8ClampedArray(RAW16_PALETTE.buffer);
+      const nodes = mode === 'iron' ? [[0,0,0,8],[.2,35,8,58],[.45,132,25,74],[.68,232,78,35],[.86,255,190,74],[1,255,255,238]]
+        : mode === 'rainbow' ? [[0,10,0,38],[.18,22,37,180],[.38,0,178,223],[.58,58,210,73],[.78,255,215,30],[1,244,28,18]]
+        : mode === 'black' ? [[0,255,255,255],[1,0,0,0]] : [[0,0,0,0],[1,255,255,255]];
+      for (let i = 0; i < 256; i += 1) {
+        const t = i / 255; let j = 1; while (t > nodes[j][0] && j < nodes.length - 1) j += 1;
+        const a = nodes[j - 1], b = nodes[j], ratio = (t - a[0]) / (b[0] - a[0]);
+        for (let c = 1; c <= 3; c += 1) bytes[i * 4 + c - 1] = Math.round(a[c] + (b[c] - a[c]) * ratio);
+      }
+      if (lastDisplayFrame) renderRaw16Frame(lastDisplayFrame);
+    });
+    $('snapshotBtn').addEventListener('click', () => {
+      if (!streamLoaded || !lastDisplayFrame) return;
+      const canvas = document.createElement('canvas'); canvas.width = RAW16_WIDTH; canvas.height = RAW16_HEIGHT;
+      const ctx = canvas.getContext('2d'); ctx.drawImage($('stream'), 0, 0); ctx.drawImage(overlay, 0, 0);
+      canvas.toBlob(blob => { if (!blob) return; const url = URL.createObjectURL(blob), a = document.createElement('a');
+        a.href = url; a.download = 't384-' + Date.now() + '.png'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 10000); });
+    });
+    $('capabilityRetryBtn').addEventListener('click', detectCapabilities);
     addEventListener('resize', renderChart, { passive: true });
     addEventListener('pagehide', () => { stopStream(); clearTimeout(pollTimer); });
     document.addEventListener('visibilitychange', () => {
@@ -1132,6 +1321,7 @@
       $('recordNote').innerHTML = '<strong>本机存储不可用：</strong>请检查浏览器隐私或存储权限。实时画面与指标不受影响，设备端不会记录。';
     });
     renderChart();
+    void detectCapabilities();
     startStream();
     poll();
   })();

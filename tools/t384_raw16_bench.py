@@ -34,16 +34,16 @@ FLAG_TPD_Y16 = 0x0010
 FLAG_PICTURE_UYVY = 0x0020
 FLAG_DATA_MODE_MASK = FLAG_TPD_Y16 | FLAG_PICTURE_UYVY
 HEADER_STRUCT = struct.Struct("<IHHIIIIHHHHHH")
-DEFAULT_URL = "http://192.168.18.1/raw16.stream"
+DEFAULT_URL = "http://192.168.17.1/raw16.stream"
 
 
 class BenchError(RuntimeError):
     pass
 
 
-def expected_frame() -> bytes:
-    frame = bytearray(FRAME_BYTES)
-    for word_index in range(WIDTH * HEIGHT):
+def expected_frame(width: int = WIDTH, height: int = HEIGHT) -> bytes:
+    frame = bytearray(width * height * 2)
+    for word_index in range(width * height):
         struct.pack_into(">H", frame, word_index * 2, (word_index * 257 + 0x0348) & 0xFFFF)
     return bytes(frame)
 
@@ -126,8 +126,8 @@ def verify_headers(response, allow_geometry: bool = False) -> tuple[int, int, st
             raise BenchError(f"unsupported stream geometry {stream_width}x{stream_height}")
         if stream_frame_bytes != stream_width * stream_height * 2:
             raise BenchError("stream frame byte count does not match geometry")
-        if stream_chunk_max not in (4096, 6144):
-            raise BenchError(f"unsupported chunk payload max {stream_chunk_max}")
+        if stream_chunk_max != stream_width * 2 * 8:
+            raise BenchError("stream chunk payload max does not match eight-row geometry")
     elif {
         "X-T384-Chunk-Payload-Max": str(CHUNK_PAYLOAD_MAX),
         "X-T384-Frame-Width": str(WIDTH),
@@ -162,13 +162,15 @@ def verify_headers(response, allow_geometry: bool = False) -> tuple[int, int, st
         )
     temperature_model = response.headers.get("X-T384-Temperature-Model")
     expected_model = (
-        "experimental-blackbody-2point-v1" if frame_mode == "tpd" else "unavailable"
+        "experimental-blackbody-2point-v1"
+        if frame_mode == "tpd" and (stream_width, stream_height) == (256, 192)
+        else "unavailable"
     )
     if temperature_model != expected_model:
         raise BenchError(
             f"temperature model {temperature_model!r}, expected {expected_model!r}"
         )
-    if frame_mode == "tpd" and response.headers.get(
+    if expected_model == "experimental-blackbody-2point-v1" and response.headers.get(
         "X-T384-Y16-Linear-X100"
     ) != "3865997,11828":
         raise BenchError("missing or invalid Y16 experimental mapping")
@@ -203,9 +205,11 @@ class SourceContract:
 
 
 class FrameAssembler:
-    def __init__(self, expected: bytes | None, source: SourceContract) -> None:
+    def __init__(self, expected: bytes | None, source: SourceContract,
+                 frame_bytes: int = FRAME_BYTES) -> None:
         self.expected_view = memoryview(expected) if expected is not None else None
         self.source = source
+        self.frame_bytes = frame_bytes
         self.sequence: int | None = None
         self.expected_offset = 0
         self.valid = False
@@ -237,7 +241,7 @@ class FrameAssembler:
             self.expected_offset += len(payload)
 
         if flags & FLAG_FRAME_END:
-            if not self.valid or self.expected_offset != FRAME_BYTES:
+            if not self.valid or self.expected_offset != self.frame_bytes:
                 self.discarded_frames += 1
             else:
                 if self.previous_complete is not None:
@@ -276,27 +280,34 @@ def run(args: argparse.Namespace) -> int:
     header = bytearray(WIRE_HEADER_BYTES)
     payload = bytearray(CHUNK_PAYLOAD_MAX)
     with opener.open(request, timeout=args.timeout) as response:
-        pixel_format, mode_flag, frame_mode = verify_headers(response)
-        expected = (expected_frame() if args.expect_source != "real" and
+        pixel_format, mode_flag, frame_mode = verify_headers(response, allow_geometry=True)
+        width = int(response.headers["X-T384-Frame-Width"])
+        height = int(response.headers["X-T384-Frame-Height"])
+        frame_bytes = int(response.headers["X-T384-Frame-Bytes"])
+        chunk_payload_max = int(response.headers["X-T384-Chunk-Payload-Max"])
+        payload = bytearray(chunk_payload_max)
+        expected = (expected_frame(width, height) if args.expect_source != "real" and
                     pixel_format == PIXEL_FORMAT_Y16_BE else None)
         print(
-            f"连接 {args.url}；正式分块链路={WIDTH}x{HEIGHT} {frame_mode} "
-            f"({FRAME_BYTES} B/frame)，完整帧门槛={args.min_mb_s:.3f} MB/s"
+            f"连接 {args.url}；正式分块链路={width}x{height} {frame_mode} "
+            f"({frame_bytes} B/frame)，完整帧门槛={args.min_mb_s:.3f} MB/s"
         )
 
         source = SourceContract(args.expect_source, mode_flag)
-        warmup = FrameAssembler(expected, source)
+        warmup = FrameAssembler(expected, source, frame_bytes)
         warmup_deadline = time.monotonic() + args.warmup
         while time.monotonic() < warmup_deadline:
             sequence, offset, _, chunk, flags = read_chunk(
-                response, header, payload, pixel_format, mode_flag
+                response, header, payload, pixel_format, mode_flag,
+                frame_bytes, width, height, chunk_payload_max
             )
             warmup.consume(sequence, offset, chunk, flags)
 
-        measured = FrameAssembler(expected, source)
+        measured = FrameAssembler(expected, source, frame_bytes)
         while True:
             sequence, offset, _, chunk, flags = read_chunk(
-                response, header, payload, pixel_format, mode_flag
+                response, header, payload, pixel_format, mode_flag,
+                frame_bytes, width, height, chunk_payload_max
             )
             if flags & FLAG_FRAME_START:
                 break
@@ -305,12 +316,13 @@ def run(args: argparse.Namespace) -> int:
         deadline = started + args.duration
         while time.monotonic() < deadline:
             sequence, offset, _, chunk, flags = read_chunk(
-                response, header, payload, pixel_format, mode_flag
+                response, header, payload, pixel_format, mode_flag,
+                frame_bytes, width, height, chunk_payload_max
             )
             measured.consume(sequence, offset, chunk, flags)
         elapsed = time.monotonic() - started
 
-    complete_payload = measured.complete_frames * FRAME_BYTES
+    complete_payload = measured.complete_frames * frame_bytes
     complete_mb_s = complete_payload / elapsed / 1_000_000
     wire_payload_mb_s = measured.raw_payload_bytes / elapsed / 1_000_000
     fps = measured.complete_frames / elapsed

@@ -4,6 +4,7 @@
 #include "system_ch32h417.h"
 #include "t384_frame_pipeline.h"
 #include "t384_frame_source.h"
+#include "t384_dualcore.h"
 #include "t384_ncm.h"
 #include "t384_time.h"
 #include "tusb.h"
@@ -35,8 +36,13 @@ int main(void)
 
     t384_ncm_prepare_identity();
 
-    t384_time_init();
+#if T384_DUALCORE
     t384_frame_pipeline_init();
+    t384_time_init();
+    printf("RAW16 dual-core V5F capture @0x30000, V3F network\r\n");
+#else
+    t384_time_init();
+    t384_frame_pipeline_init();     /*帧流水+数据源*/
     if (!t384_frame_source_init()) {
         printf("RAW16 capture adapter init failed\r\n");
         while (1) {
@@ -48,6 +54,8 @@ int main(void)
     if (!t384_frame_source_stream_ready()) {
         printf("MINI2 DVP diagnostic mode; RAW16 stream is gated\r\n");
     }
+
+#endif
 
     const tusb_rhport_init_t usb_init = {
         .role = TUSB_ROLE_DEVICE,
@@ -63,6 +71,12 @@ int main(void)
     const bool network_ready = t384_ncm_init();
     printf(network_ready ? "NCM/lwIP init passed\r\n"
                          : "NCM/lwIP init failed; USB kept active\r\n");
+
+#if T384_DUALCORE
+    /* Wake after network initialization so the DTCM-probe timeout does not
+     * include USB/lwIP startup latency. */
+    NVIC_WakeUp_V5F(T384_V5F_ENTRY);
+#endif
 
     while (1) {
         tud_task();

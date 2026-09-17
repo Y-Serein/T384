@@ -45,6 +45,12 @@ typedef struct {
     uint32_t dvp_fifo_overflows;
     uint32_t dvp_orphan_rows;
     uint32_t dvp_bad_frames;
+    uint32_t dvp_restarts;
+    uint32_t dvp_restart_cr0;
+    uint32_t dvp_restart_cr1;
+    uint32_t dvp_restart_ifr;
+    uint32_t dvp_module_probes;
+    uint32_t dvp_module_rearms;
     uint32_t dvp_last_frame_rows;
     uint32_t dvp_last_frame_bytes;
     uint64_t dvp_observed_bytes;
