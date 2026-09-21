@@ -10,6 +10,8 @@
 static uint8_t command[279], reply[521];
 static size_t sent, reply_size, reply_offset;
 static unsigned pauses, resumes, reads, closes, info_queries;
+static unsigned parameter_queries;
+static unsigned state_queries;
 static unsigned now, scenario;
 static bool active;
 static uint32_t file_length = 32768u;
@@ -37,10 +39,36 @@ static void make_reply(void)
     if (command[6] == 1) {
         assert(index == 0x81);
         ++info_queries;
-        if (command[9] == 6) memcpy(reply+5, scenario == 10 ? "WN2256" : "WN2256[F1]", scenario == 10 ? 6 : 10);
+        if (command[9] == 6) {
+            const char *pn = scenario >= 16 ? "WN2384" : scenario == 10 ? "WN2256" : "WN2256[F1]";
+            memcpy(reply+5, pn, strlen(pn));
+        }
         else if (command[9] == 7) memcpy(reply+5, "test-sn-001", 11);
         else { assert(command[9] == 2); memcpy(reply+5, "00.00.08.03", 11); }
-        if (scenario == 6 && info_queries == 4) reply[5] ^= 1;
+        if ((scenario == 6 || scenario == 22 || scenario==31) && info_queries == 4) reply[5] ^= 1;
+    } else if (scenario>=25 && (command[6]==0x2F || command[6]==2 || command[6]==0x0F)) {
+        ++state_queries;
+        if (command[6]==0x2F) {
+            assert(command[5]==1 && index==0x81 && n==1);
+            reply[5]=(scenario==30 && state_queries==5)?0:1;
+        } else if (command[6]==0x0F) {
+            assert(command[5]==1 && index==0x86 && n==2);
+            reply[5]=0x68; reply[6]=0x1D;
+        } else { assert(command[5]==0x10 && n==1 && (index==0x81 || index==0x83)); reply[5]=1; }
+        if (state_queries==1) {
+            if (scenario==26) { reply[4]=1; n=0; }
+            if (scenario==28) n=2;
+            if (scenario==29) { reply_size=reply_offset=0; return; }
+        }
+    } else if (command[6] == 0x26) {
+        assert(command[5] == 1 && index == 0x8A && n == 6);
+        assert(command[9] == (scenario == 17 ? 0 : 1));
+        assert(memcmp(command+10, "\0\0\0\0\0\0\0", 7) == 0);
+        memcpy(reply+5, "\xfe\xff\xfd\xff\x34\x12", 6);
+        ++parameter_queries;
+        if (scenario == 18) { reply[4] = 1; n = 0; }
+        if (scenario == 20) n = 4;
+        if (scenario == 21) { reply_size = reply_offset = 0; return; }
     } else {
         assert(command[5] == 0x10 && command[6] == 8);
         if (index == 0xC7) {
@@ -76,12 +104,15 @@ static void make_reply(void)
     const uint16_t crc = t384_mini2_crc16_xmodem(reply, n+5u);
     reply[n+5u] = (uint8_t)crc; reply[n+6u] = (uint8_t)(crc >> 8);
     reply[n+7u] = 0xEB; reply[n+8u] = 0xAA;
-    if (scenario == 1 && index == 0x86) reply[5] ^= 0x80;
+    if ((scenario == 1 && index == 0x86) || (scenario == 19 && index == 0x8A)) reply[5] ^= 0x80;
+    if (scenario==27 && state_queries==1) reply[5]^=0x80;
     reply_size = n+9u; reply_offset = 0;
 }
 bool t384_module_file_port_tx(uint8_t value)
 {
     assert(active && sent < sizeof(command));
+    if (scenario == 23 && sent == 10 && command[7] == 0x8A &&
+        t384_module_files_status()->error == 0) return false;
     command[sent++] = value;
     if (sent >= 5u && sent == 5u+command[3]+((size_t)command[4] << 8)) {
         make_reply(); sent = 0;
@@ -118,12 +149,99 @@ static void parser_tests(void)
         assert(t384_module_files_parse_http(bad[i], strlen(bad[i]), &out) >= 400);
 }
 
+static void state_tests(void)
+{
+    assert(t384_module_files_start("cal-state",true,now)==-2);
+    assert(t384_module_files_start("cal-state",false,now)==0);
+    const t384_module_file_status_t *s=t384_module_files_status();
+    for (;now<40000 && s->state==T384_MF_READING;++now) t384_module_files_task(now);
+    assert(reads==0 && closes==0 && s->path[0]==0);
+    assert(s->open_status==255 && s->close_status==255);
+    if (scenario==25) {
+        assert(state_queries==5 && info_queries==6 && s->state==T384_MF_READY);
+        assert(s->length==8 && s->received==8);
+        uint8_t *data=t384_module_files_download(s->transaction);
+        assert(data && memcmp(data+T384_MODULE_FILE_HEADER_RESERVE,"\1\0\x68\x1D\1\0\1\0",8)==0);
+        t384_module_files_download_release(true);
+    } else {
+        assert(s->state==T384_MF_ERROR && !s->held);
+        assert(!t384_module_files_download(s->transaction));
+        if (scenario==26 || scenario==30 || scenario==31) {
+            assert(!s->cleanup_failed);
+            scenario=25; state_queries=info_queries=0;
+            assert(t384_module_files_start("cal-state",false,now)==0);
+            for (;now<80000 && s->state==T384_MF_READING;++now) t384_module_files_task(now);
+            assert(s->state==T384_MF_READY);
+            t384_module_files_abort(now);
+        } else {
+            assert(s->cleanup_failed);
+            assert(s->error==(scenario==27?-5:scenario==28?-7:-4));
+            assert(t384_module_files_start("cal-state",false,now)==-2);
+        }
+    }
+    assert(pauses==resumes && !active);
+    puts("calibration state snapshot/identity/gain-change/refusal/CRC/length/timeout passed");
+}
+
+static void parameter_tests(void)
+{
+    const char *id = scenario == 17 ? "tpd-low" : "tpd-high";
+    assert(t384_module_files_start(id, true, now) == -2);
+    assert(pauses == 0);
+    assert(t384_module_files_start(id, false, now) == 0);
+    const t384_module_file_status_t *s = t384_module_files_status();
+    for (now = 0; now < 40000 && s->state == T384_MF_READING; ++now) {
+        t384_module_files_task(now);
+        if (scenario == 23 && sent > 0 && command[7] == 0x8A)
+            t384_module_files_abort(now);
+    }
+    assert(parameter_queries == 1 && reads == 0 && closes == 0);
+    assert(s->path[0] == 0 && s->open_status == 255 && s->close_status == 255);
+    if (scenario == 16 || scenario == 17 || scenario == 24) {
+        assert(s->state == T384_MF_READY && info_queries == 6);
+        assert(strcmp(s->pn, "WN2384") == 0 && s->length == 6 && s->received == 6);
+        if (scenario == 24) {
+            t384_module_files_abort(now);
+            assert(s->state == T384_MF_ABORTED && !s->held);
+        } else {
+            uint8_t *data = t384_module_files_download(s->transaction);
+            assert(data && memcmp(data+T384_MODULE_FILE_HEADER_RESERVE,
+                                  "\xfe\xff\xfd\xff\x34\x12", 6) == 0);
+            t384_module_files_download_release(true);
+            assert(s->state == T384_MF_DONE && !s->held);
+        }
+        assert(!s->cleanup_failed);
+    } else {
+        assert((s->state == T384_MF_ERROR || s->state == T384_MF_ABORTED) && !s->held);
+        assert(t384_module_files_download(s->transaction) == NULL);
+        if (scenario == 18 || scenario == 22) {
+            assert(!s->cleanup_failed);
+            assert(s->error == (scenario == 18 ? -6 : -8));
+            scenario = 16;
+            assert(t384_module_files_start("tpd-high", false, now) == 0);
+            for (; now < 80000 && s->state == T384_MF_READING; ++now)
+                t384_module_files_task(now);
+            assert(s->state == T384_MF_READY);
+            t384_module_files_abort(now);
+        } else {
+            assert(s->cleanup_failed);
+            assert(s->error_command == 0x8A);
+            assert(s->error == (scenario == 19 ? -5 : scenario == 20 ? -7 : scenario == 21 ? -4 : -11));
+            assert(t384_module_files_start("tpd-low", false, now) == -2);
+        }
+    }
+    assert(pauses == resumes && !active && closes == 0 && reads == 0);
+    puts("TPD parameters query/identity/refusal/CRC/length/timeout/abort protection passed");
+}
+
 int main(int argc, char **argv)
 {
     scenario = argc > 1 ? (unsigned)atoi(argv[1]) : 0;
     const unsigned requested_scenario = scenario;
     parser_tests();
     t384_frame_pipeline_init();
+    if (scenario>=25) { state_tests(); return 0; }
+    if (scenario >= 16) { parameter_tests(); return 0; }
     assert(t384_module_files_start("../secret", false, now) == -1);
     assert(t384_module_files_start("nuct-high", true, now) == -2);
     assert(pauses == 0);

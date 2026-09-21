@@ -64,6 +64,11 @@ pathlib.Path(sys.argv[2]).write_text(matches[0], encoding="utf-8")
 PY
 node --check "$console_javascript"
 node "$project_root/tests/device_console_ui_smoke.cjs"
+node "$project_root/tests/device_console_reconnect_smoke.cjs"
+gcc "${common_flags[@]}" -ffunction-sections -fdata-sections \
+  "$project_root/tests/ncm_reconnect_smoke.c" \
+  -Wl,--gc-sections -o /tmp/t384-ncm-reconnect-smoke
+/tmp/t384-ncm-reconnect-smoke
 gcc -std=c99 -Wall -Wextra -Werror -I"$firmware_root/Common/App" \
   "$project_root/tests/dns_host_smoke.c" -o /tmp/t384-dns-smoke
 /tmp/t384-dns-smoke
@@ -243,6 +248,13 @@ gcc -std=gnu99 -DT384_RAW16_PROFILE="$profile" \
 "$pattern_output"
 done
 
+gcc "${common_flags[@]}" -DT384_RAW16_PROFILE=640u \
+  -ffunction-sections -fdata-sections \
+  "$project_root/tests/mini2_stream_init_smoke.c" \
+  "$firmware_root/Common/Raw16/t384_mini2_protocol.c" \
+  -Wl,--gc-sections -o /tmp/t384-mini2-640-native-smoke
+/tmp/t384-mini2-640-native-smoke
+
 gcc -std=gnu99 -Wall -Wextra -Werror \
   -I"$firmware_root/Common/Raw16" \
   "$project_root/tests/raw16_pattern_smoke.c" \
@@ -388,7 +400,7 @@ if rg --hidden -a -q 'obj/T384-NCM_V3F\.(hex|elf)' \
 fi
 rg -Fq '#if T384_RAW16_FRAME_BYTES != 98304u && T384_RAW16_FRAME_BYTES != 221184u' \
   "$firmware_root/Common/Raw16/t384_raw16.c"
-rg -Fq 'X-T384-Format: T384-FRAME-CHUNK-V1' \
+rg -Fq 'X-T384-Format: T384-FRAME-CHUNK-V%u' \
   "$firmware_root/Common/App/http_status.c"
 rg -Fq 'X-T384-Pixel-Format-Code: %u' \
   "$firmware_root/Common/App/http_status.c"
@@ -424,6 +436,8 @@ fi
 rg -Fq '#define CFG_TUD_NCM_IN_NTB_MAX_SIZE  16384' \
   "$firmware_root/Common/App/tusb_config.h"
 rg -Fq '#define TCP_SND_BUF (16 * TCP_MSS)' \
+  "$firmware_root/Common/App/lwipopts.h"
+rg -Fq '#define TCP_SND_BUF (32 * TCP_MSS)' \
   "$firmware_root/Common/App/lwipopts.h"
 rg -Fq '#define LWIP_CHECKSUM_ON_COPY 1' \
   "$firmware_root/Common/App/lwipopts.h"
@@ -507,7 +521,7 @@ rg -Fq 'DMA_M2M_Enable' \
 rg -Fq 'dma-equivalent-dvp-source-v1' \
   "$firmware_root/Common/Raw16/t384_frame_source_sim.c"
 rg -Fq "fetch('/raw16.stream" "$project_root/web/raw16_bench_console.html"
-rg -Fq 'T384-FRAME-CHUNK-V1' "$project_root/web/raw16_bench_console.html"
+rg -Fq "'T384-FRAME-CHUNK-V' + wireVersion" "$project_root/web/raw16_bench_console.html"
 rg -Fq 'PIXEL_FORMAT_Y16_BE' "$project_root/web/raw16_bench_console.html"
 rg -Fq 'PIXEL_FORMAT_UYVY' "$project_root/web/raw16_bench_console.html"
 rg -Fq "temperatureModel !== 'experimental-blackbody-2point-v1'" \

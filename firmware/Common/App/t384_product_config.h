@@ -41,11 +41,31 @@
 #define T384_MINI2_DVP_HEIGHT T384_RAW16_HEIGHT
 #define T384_MINI2_DVP_ROW_BYTES (T384_MINI2_DVP_WIDTH * 2u)
 #define T384_MINI2_DVP_EXPECTED_ROWS T384_MINI2_DVP_HEIGHT
+#if T384_RAW16_PROFILE == 640u
+/* MINI2 UART table V0.4: 0x86 requests four bytes (last byte reserved).
+ * WN2384's independently validated SDK path requests three. */
+#define T384_MINI2_DIGITAL_STATE_BYTES 4u
+#else
+#define T384_MINI2_DIGITAL_STATE_BYTES 3u
+#endif
 #if T384_RAW16_PROFILE == 384u
+/* WN2384/FW 00.00.07.01: captured DMA ROI/prefix is low byte first.
+ * This describes receiver memory, not an unmeasured physical bus byte order.
+ * Normalize at the source; the existing Y16BE wire contract stays unchanged.
+ * WN2256's independently validated byte order must not inherit this setting. */
+#define T384_MINI2_DVP_Y16_LITTLE_ENDIAN 1u
 /* WCH RM V1.6 29.3.1: JPEG receive mode makes COL_NUM the DMA block
  * length. This is byte packing only, not a JPEG encoder or wire format. */
 #define T384_MINI2_DMA_BLOCK_ROWS T384_PIPELINE_CHUNK_ROWS
+#elif T384_RAW16_PROFILE == 640u
+/* Independent bring-up hypothesis, not WN2384 byte-order evidence. Compare
+ * /diag's raw prefix and both ROI interpretations before radiometry work. */
+#ifndef T384_MINI2_DVP_Y16_LITTLE_ENDIAN
+#define T384_MINI2_DVP_Y16_LITTLE_ENDIAN 0u
+#endif
+#define T384_MINI2_DMA_BLOCK_ROWS T384_PIPELINE_CHUNK_ROWS
 #else
+#define T384_MINI2_DVP_Y16_LITTLE_ENDIAN 0u
 #define T384_MINI2_DMA_BLOCK_ROWS 1u
 #endif
 #define T384_MINI2_DMA_BLOCK_BYTES \
@@ -61,12 +81,21 @@
 #define T384_EXPERIMENTAL_TEMP_MODEL "experimental-blackbody-2point-v1"
 #define T384_EXPERIMENTAL_Y16_ZERO_C_X100 3865997u
 #define T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 11828u
+#elif T384_RAW16_PROFILE == 640u
+/* TIFSC640/FW 01.00.01.03: logs show native ~60 FPS complete DVP frames.
+ * This is the expected capture cadence, not an applied UART FPS command or
+ * a claim about complete-frame HTTP throughput. No FPS setter is sent. */
+#define T384_MINI2_DETECTOR_FPS 0u
+#define T384_MINI2_DVP_FPS 60u
+#define T384_EXPERIMENTAL_TEMP_MODEL "unavailable"
+#define T384_EXPERIMENTAL_Y16_ZERO_C_X100 0u
+#define T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 0u
 #else
 /* Detector cadence and digital output cadence are independent commands.
- * Preserve the WN2384 native 60 Hz detector; 30 FPS DVP keeps the existing
- * transport budget until complete-frame 60 FPS throughput is verified. */
+ * Request native 60 FPS DVP; sustained complete-frame transport still needs
+ * hardware validation. A setter ACK alone never enables collection. */
 #define T384_MINI2_DETECTOR_FPS 60u
-#define T384_MINI2_DVP_FPS 30u
+#define T384_MINI2_DVP_FPS 60u
 #define T384_EXPERIMENTAL_TEMP_MODEL "unavailable"
 #define T384_EXPERIMENTAL_Y16_ZERO_C_X100 0u
 #define T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100 0u

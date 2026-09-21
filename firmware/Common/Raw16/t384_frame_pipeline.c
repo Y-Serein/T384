@@ -7,7 +7,8 @@
 
 #include "t384_compiler.h"
 
-#if T384_PIPELINE_CHUNK_BYTES != 4096u && T384_PIPELINE_CHUNK_BYTES != 6144u
+#if T384_PIPELINE_CHUNK_BYTES != 4096u && T384_PIPELINE_CHUNK_BYTES != 6144u && \
+    T384_PIPELINE_CHUNK_BYTES != 5120u
 #error "unsupported T384 pipeline chunk size"
 #endif
 

@@ -27,11 +27,13 @@ WIRE_HEADER_BYTES = 36
 CHUNK_PAYLOAD_MAX = 4096
 PIXEL_FORMAT_Y16_BE = 2
 PIXEL_FORMAT_UYVY = 3
+PIXEL_FORMAT_PACKED_UYVY = 4
 FLAG_FRAME_START = 0x0001
 FLAG_FRAME_END = 0x0002
 FLAG_SYNTHETIC = 0x0004
 FLAG_TPD_Y16 = 0x0010
 FLAG_PICTURE_UYVY = 0x0020
+FLAG_PICTURE_PACKED = 0x0040
 FLAG_DATA_MODE_MASK = FLAG_TPD_Y16 | FLAG_PICTURE_UYVY
 HEADER_STRUCT = struct.Struct("<IHHIIIIHHHHHH")
 DEFAULT_URL = "http://192.168.17.1/raw16.stream"
@@ -81,7 +83,8 @@ def decode_header(header: bytearray, expected_pixel_format: int,
         pixel_format,
         crc,
     ) = HEADER_STRUCT.unpack(header)
-    if magic != WIRE_MAGIC or version != WIRE_VERSION or header_bytes != WIRE_HEADER_BYTES:
+    expected_version = 2 if expected_pixel_format == PIXEL_FORMAT_PACKED_UYVY else WIRE_VERSION
+    if magic != WIRE_MAGIC or version != expected_version or header_bytes != WIRE_HEADER_BYTES:
         raise BenchError(f"invalid chunk envelope magic/version: 0x{magic:08X}/{version}/{header_bytes}")
     if binascii.crc_hqx(memoryview(header)[:34], 0) != crc:
         raise BenchError(f"frame {sequence} offset {frame_offset}: header CRC mismatch")
@@ -96,6 +99,8 @@ def decode_header(header: bytearray, expected_pixel_format: int,
         )
     if flags & FLAG_DATA_MODE_MASK != expected_mode_flag:
         raise BenchError(f"frame {sequence}: data mode flags 0x{flags:04X} mismatch")
+    if bool(flags & FLAG_PICTURE_PACKED) != (expected_pixel_format == PIXEL_FORMAT_PACKED_UYVY):
+        raise BenchError(f"frame {sequence}: packed flag mismatch")
     if not 0 < payload_bytes <= chunk_payload_max or frame_offset + payload_bytes > frame_bytes:
         raise BenchError(f"frame {sequence}: invalid chunk {frame_offset}+{payload_bytes}")
     return sequence, frame_offset, capture_ms, payload_bytes, flags
@@ -106,8 +111,6 @@ def verify_headers(response, allow_geometry: bool = False) -> tuple[int, int, st
         raise BenchError(f"HTTP status is {response.status}, expected 200")
     required = {
         "Content-Type": "application/x-t384-frame-chunks",
-        "X-T384-Format": "T384-FRAME-CHUNK-V1",
-        "X-T384-Wire-Version": str(WIRE_VERSION),
         "X-T384-Chunk-Header-Bytes": str(WIRE_HEADER_BYTES),
     }
     for name, expected in required.items():
@@ -122,12 +125,9 @@ def verify_headers(response, allow_geometry: bool = False) -> tuple[int, int, st
     except ValueError as error:
         raise BenchError("invalid stream geometry headers") from error
     if allow_geometry:
-        if (stream_width, stream_height) not in ((256, 192), (384, 288)):
+        if (stream_width, stream_height) not in ((256, 192), (384, 288), (640, 512)):
             raise BenchError(f"unsupported stream geometry {stream_width}x{stream_height}")
-        if stream_frame_bytes != stream_width * stream_height * 2:
-            raise BenchError("stream frame byte count does not match geometry")
-        if stream_chunk_max != stream_width * 2 * 8:
-            raise BenchError("stream chunk payload max does not match eight-row geometry")
+        # The pixel format below determines whether 640 uses the packed v2 geometry.
     elif {
         "X-T384-Chunk-Payload-Max": str(CHUNK_PAYLOAD_MAX),
         "X-T384-Frame-Width": str(WIDTH),
@@ -153,6 +153,9 @@ def verify_headers(response, allow_geometry: bool = False) -> tuple[int, int, st
         "tpd": (PIXEL_FORMAT_Y16_BE, "Y16BE", FLAG_TPD_Y16),
         "picture-fallback": (PIXEL_FORMAT_UYVY, "UYVY", FLAG_PICTURE_UYVY),
     }
+    if (stream_width, stream_height) == (640, 512) and pixel_format == PIXEL_FORMAT_PACKED_UYVY:
+        formats["picture-fallback"] = (
+            PIXEL_FORMAT_PACKED_UYVY, "PACKED-UYVY", FLAG_PICTURE_UYVY)
     if frame_mode not in formats:
         raise BenchError(f"unsupported X-T384-Frame-Mode {frame_mode!r}")
     expected_format, expected_name, mode_flag = formats[frame_mode]
@@ -160,6 +163,18 @@ def verify_headers(response, allow_geometry: bool = False) -> tuple[int, int, st
         raise BenchError(
             f"inconsistent pixel format {pixel_format}/{pixel_name!r} for {frame_mode}"
         )
+    packed_picture = pixel_format == PIXEL_FORMAT_PACKED_UYVY
+    expected_version = 2 if packed_picture else WIRE_VERSION
+    if (response.headers.get("X-T384-Format") != f"T384-FRAME-CHUNK-V{expected_version}"
+            or response.headers.get("X-T384-Wire-Version") != str(expected_version)):
+        raise BenchError("stream wire version does not match pixel format")
+    if allow_geometry:
+        expected_frame_bytes = ((stream_width * 4 + 32) * (stream_height // 4)
+                                if packed_picture else stream_width * stream_height * 2)
+        expected_chunk_max = (stream_width * 4 + 32 if packed_picture else
+                              stream_width * 2 * (4 if stream_width == 640 else 8))
+        if (stream_frame_bytes, stream_chunk_max) != (expected_frame_bytes, expected_chunk_max):
+            raise BenchError("stream geometry does not match pixel format")
     temperature_model = response.headers.get("X-T384-Temperature-Model")
     expected_model = (
         "experimental-blackbody-2point-v1"

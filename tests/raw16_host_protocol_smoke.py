@@ -5,13 +5,8 @@ from __future__ import annotations
 
 import binascii
 import importlib.util
-import io
-import json
 import pathlib
 import sys
-import tempfile
-from types import SimpleNamespace
-from unittest.mock import patch
 
 
 def load_bench(path: pathlib.Path):
@@ -27,15 +22,19 @@ class Response:
 
     def __init__(self, bench, mode: str, pixel_name: str, pixel_format: int,
                  width: int = 256, height: int = 192):
+        packed = pixel_format == bench.PIXEL_FORMAT_PACKED_UYVY
+        version = 2 if packed else bench.WIRE_VERSION
         self.headers = {
             "Content-Type": "application/x-t384-frame-chunks",
-            "X-T384-Format": "T384-FRAME-CHUNK-V1",
-            "X-T384-Wire-Version": str(bench.WIRE_VERSION),
+            "X-T384-Format": f"T384-FRAME-CHUNK-V{version}",
+            "X-T384-Wire-Version": str(version),
             "X-T384-Chunk-Header-Bytes": str(bench.WIRE_HEADER_BYTES),
-            "X-T384-Chunk-Payload-Max": str(width * 2 * 8),
+            "X-T384-Chunk-Payload-Max": str(width * 4 + 32 if packed else
+                                            width * 2 * (4 if width == 640 else 8)),
             "X-T384-Frame-Width": str(width),
             "X-T384-Frame-Height": str(height),
-            "X-T384-Frame-Bytes": str(width * height * 2),
+            "X-T384-Frame-Bytes": str((width * 4 + 32) * (height // 4) if packed else
+                                      width * height * 2),
             "X-T384-Frame-Mode": mode,
             "X-T384-Pixel-Format": pixel_name,
             "X-T384-Pixel-Format-Code": str(pixel_format),
@@ -51,10 +50,13 @@ def chunk_header(bench, flags: int, pixel_format: int,
                  width: int = 256, height: int = 192,
                  offset: int = 0) -> bytearray:
     header = bytearray(bench.WIRE_HEADER_BYTES)
+    packed = pixel_format == bench.PIXEL_FORMAT_PACKED_UYVY
+    frame_bytes = (width * 4 + 32) * (height // 4) if packed else width * height * 2
+    chunk_bytes = width * 4 + 32 if packed else width * 2 * (4 if width == 640 else 8)
     bench.HEADER_STRUCT.pack_into(
-        header, 0, bench.WIRE_MAGIC, bench.WIRE_VERSION,
-        bench.WIRE_HEADER_BYTES, 7, offset, width * height * 2, 1234,
-        width * 2 * 8, width, height, flags,
+        header, 0, bench.WIRE_MAGIC, 2 if packed else bench.WIRE_VERSION,
+        bench.WIRE_HEADER_BYTES, 7, offset, frame_bytes, 1234,
+        chunk_bytes, width, height, flags,
         pixel_format, 0,
     )
     crc = binascii.crc_hqx(memoryview(header)[:34], 0)
@@ -79,19 +81,24 @@ def main() -> int:
         )
         assert decoded[0] == 7 and decoded[-1] & mode_flag
 
-    for width, height in ((256, 192), (384, 288)):
+    for width, height in ((256, 192), (384, 288), (640, 512)):
         for mode, name, pixel_format, mode_flag in cases:
+            if width == 640 and mode == "picture-fallback":
+                name, pixel_format = "PACKED-UYVY", bench.PIXEL_FORMAT_PACKED_UYVY
             response = Response(bench, mode, name, pixel_format, width, height)
             assert bench.verify_headers(response, allow_geometry=True) == (
                 pixel_format, mode_flag, mode
             )
-            frame_bytes = width * height * 2
-            chunk_bytes = width * 2 * 8
+            packed = pixel_format == bench.PIXEL_FORMAT_PACKED_UYVY
+            frame_bytes = (width * 4 + 32) * (height // 4) if packed else width * height * 2
+            chunk_bytes = width * 4 + 32 if packed else width * 2 * (4 if width == 640 else 8)
             assembler = bench.FrameAssembler(
                 None, bench.SourceContract("real", mode_flag), frame_bytes
             )
             for offset in range(0, frame_bytes, chunk_bytes):
                 flags = mode_flag
+                if packed:
+                    flags |= bench.FLAG_PICTURE_PACKED
                 if offset == 0:
                     flags |= bench.FLAG_FRAME_START
                 if offset + chunk_bytes == frame_bytes:
@@ -117,42 +124,9 @@ def main() -> int:
         else:
             raise AssertionError(f"invalid 384 response accepted: {field}")
 
-    # Exercise the blackbody tool through its real negotiation, parser and ROI
-    # path. A 384 source has no WN2256 temperature model before calibration.
-    sys.path.insert(0, str(pathlib.Path(sys.argv[1]).resolve().parent))
-    import capture_radiometry_calibration as capture_tool
-    stream = io.BytesIO()
-    width, height = 384, 288
-    frame_bytes, chunk_bytes = width * height * 2, width * 2 * 8
-    for offset in range(0, frame_bytes, chunk_bytes):
-        flags = bench.FLAG_TPD_Y16
-        if offset == 0:
-            flags |= bench.FLAG_FRAME_START
-        if offset + chunk_bytes == frame_bytes:
-            flags |= bench.FLAG_FRAME_END
-        stream.write(chunk_header(bench, flags, bench.PIXEL_FORMAT_Y16_BE,
-                                  width, height, offset))
-        stream.write(b"\x27\x10" * (chunk_bytes // 2))
-    stream.seek(0)
-    stream.status = 200
-    stream.headers = Response(bench, "tpd", "Y16BE", bench.PIXEL_FORMAT_Y16_BE,
-                              width, height).headers
-    with tempfile.TemporaryDirectory(prefix="t384-capture-384-") as temp:
-        output = pathlib.Path(temp)
-        args = SimpleNamespace(output=output, diag_url="http://192.168.18.1/diag",
-                               url="http://192.168.18.1/raw16.stream", frames=1,
-                               timeout=1, setpoint_c=0, gain="high", distance_m=0.01,
-                               emissivity=0.98, humidity=None, ta_c=None, tu_c=None)
-        with patch.object(capture_tool, "fetch_diag", return_value={"source.pixel_format": "2"}), \
-                patch.object(capture_tool.urllib.request, "build_opener") as opener:
-            opener.return_value.open.return_value = stream
-            assert capture_tool.capture(args) == 0
-        manifest = json.loads((output / "manifest.json").read_text())
-        frame = manifest["frames"][0]
-        assert frame["bytes"] == frame_bytes
-        assert (output / frame["path"]).stat().st_size == frame_bytes
-        assert frame["roi"]["x"] == 184 and frame["roi"]["y"] == 136
-        assert frame["roi"]["mean_y16"] == 10000
+    # Capture with archived tables and live boundary state is exercised by
+    # calibration_capture_smoke.py in check_module_files.sh. Keep this test
+    # focused on 256/384 wire negotiation and complete-frame assembly.
 
     try:
         bench.verify_headers(Response(
@@ -175,7 +149,7 @@ def main() -> int:
     else:
         raise AssertionError("chunk/HTTP format mismatch was accepted")
 
-    print("T384 host 256/384 Y16/Picture negotiation and complete-frame smoke passed")
+    print("T384 host 256/384/640 Y16/Picture negotiation and complete-frame smoke passed")
     return 0
 
 

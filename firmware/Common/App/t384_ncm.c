@@ -246,6 +246,8 @@ bool tud_network_recv_cb(const uint8_t *source, uint16_t size)
 void t384_ncm_get_stats(t384_ncm_stats_t *out)
 {
 	if (out == NULL) return;
+	tud_network_ncm_diag_t diag;
+	tud_network_ncm_diag_get(&diag);
 	out->rx_callback = ncm_stats.rx_callback;
 	out->rx_busy_drop = ncm_stats.rx_busy_drop;
 	out->rx_alloc_drop = ncm_stats.rx_alloc_drop;
@@ -255,6 +257,26 @@ void t384_ncm_get_stats(t384_ncm_stats_t *out)
 	out->tx_backpressure = ncm_stats.tx_backpressure;
 	out->tx_drop = ncm_stats.tx_drop;
 	out->tx_submit = ncm_stats.tx_submit;
+    out->mounts = ncm_stats.mounts;
+    out->umounts = ncm_stats.umounts;
+    out->suspends = ncm_stats.suspends;
+    out->resumes = ncm_stats.resumes;
+	out->xmit_max_ntb_size = diag.xmit_max_ntb_size;
+	out->xmit_max_datagrams = diag.xmit_max_datagrams;
+	out->xmit_free_ntb = diag.xmit_free_ntb;
+	out->xmit_ready_ntb = diag.xmit_ready_ntb;
+	out->xmit_glue_active = diag.xmit_glue_active;
+	out->xmit_tinyusb_active = diag.xmit_tinyusb_active;
+	out->xmit_glue_datagrams = diag.xmit_glue_datagrams;
+	out->xmit_ntb_submit = diag.xmit_ntb_submit;
+	out->xmit_ntb_complete = diag.xmit_ntb_complete;
+	out->xmit_ntb_errors = diag.xmit_ntb_errors;
+	out->xmit_ntb_bytes = diag.xmit_ntb_bytes;
+	out->xmit_ntb_datagrams = diag.xmit_ntb_datagrams;
+	out->xmit_ntb_1 = diag.xmit_ntb_1;
+	out->xmit_ntb_2_4 = diag.xmit_ntb_2_4;
+	out->xmit_ntb_5_8 = diag.xmit_ntb_5_8;
+	out->xmit_ntb_9_plus = diag.xmit_ntb_9_plus;
 }
 
 uint16_t tud_network_xmit_cb(uint8_t *destination, void *reference, uint16_t argument)
@@ -272,13 +294,18 @@ void tud_network_init_cb(void)
 
 void tud_mount_cb(void)
 {
+    ++ncm_stats.mounts;
     if (network_initialized) {
+        /* Mount runs from the SET_CONFIGURATION control callback. Keep it
+         * side-effect free for the HTTP/lwIP owner; an explicit unmount is
+         * the session cleanup boundary. */
         netif_set_link_up(&ncm_netif);
     }
 }
 
 void tud_umount_cb(void)
 {
+    ++ncm_stats.umounts;
     if (network_initialized) {
         netif_set_link_down(&ncm_netif);
         discard_received_frame();
@@ -288,6 +315,7 @@ void tud_umount_cb(void)
 
 void tud_suspend_cb(bool remote_wakeup_en)
 {
+    ++ncm_stats.suspends;
     (void)remote_wakeup_en;
     if (network_initialized) {
         netif_set_link_down(&ncm_netif);
@@ -296,6 +324,7 @@ void tud_suspend_cb(bool remote_wakeup_en)
 
 void tud_resume_cb(void)
 {
+    ++ncm_stats.resumes;
     if (network_initialized && tud_mounted()) {
         netif_set_link_up(&ncm_netif);
     }

@@ -20,6 +20,10 @@ typedef struct {
     bool held, downloading, cleanup_failed;
     char id[16], path[96], pn[33], sn[33];
     uint8_t fw[11];
+    /* Diagnostics: last command frame and raw response frame on failure.
+     * Raw bytes, hex-encoded by the HTTP layer. Bounded to fit the 1 KiB IPC. */
+    uint8_t tx_diag[23], tx_diag_len;
+    uint8_t rx_diag[32], rx_diag_len;
 } t384_module_file_status_t;
 
 /* Board adapter: all functions except the RX ISR run in the main task.

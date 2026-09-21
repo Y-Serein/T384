@@ -101,6 +101,10 @@ typedef struct {
     uint32_t mini2_query_stream_mode_valid;
     uint32_t mini2_query_stream_mode_status;
     uint32_t mini2_query_stream_mode_0x85;
+    uint32_t mini2_query_yuv_valid;
+    uint32_t mini2_query_yuv_status;
+    uint32_t mini2_query_yuv_format;
+    uint32_t picture_pack_rejected_blocks;
     uint32_t mini2_query_auto_ffc_valid;
     uint32_t mini2_query_auto_ffc_status;
     uint32_t mini2_query_auto_ffc_enabled;

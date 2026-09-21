@@ -23,7 +23,8 @@ def opener():
 def diag(base, timeout):
     with opener().open(base + "/diag", timeout=timeout) as response:
         text = response.read().decode("utf-8")
-    prefixes = ("source.", "dvp.", "pipeline.", "ncm.", "http.", "stream.", "dualcore.")
+    prefixes = ("source.", "dvp.", "pipeline.", "ncm.", "http.",
+                "tcp.", "stream.", "dualcore.")
     return {key: value for line in text.splitlines() if "=" in line
             for key, value in [line.split("=", 1)] if key.startswith(prefixes)}
 
@@ -33,44 +34,66 @@ def window(base, duration, timeout, max_gap, observe):
     first_latency = None
     last_frame = began
     longest = 0.0
-    with opener().open(base + "/raw16.stream", timeout=timeout) as response:
-        pixel_format, mode, _ = verify_headers(response, allow_geometry=True)
-        width = int(response.headers["X-T384-Frame-Width"])
-        height = int(response.headers["X-T384-Frame-Height"])
-        frame_bytes = int(response.headers["X-T384-Frame-Bytes"])
-        chunk_max = int(response.headers["X-T384-Chunk-Payload-Max"])
-        assembler = FrameAssembler(None, SourceContract("real", mode), frame_bytes)
-        header, payload = bytearray(36), bytearray(chunk_max)
-        deadline = began + duration
-        synced = False
-        # Finish the frame crossing the deadline; never hide a partial frame.
-        while True:
-            sequence, offset, _, chunk, flags = read_chunk(
-                response, header, payload, pixel_format, mode,
-                frame_bytes, width, height, chunk_max)
-            now = time.monotonic()
-            if now - last_frame > max_gap:
-                raise BenchError(f"no complete frame for {now - last_frame:.3f}s")
-            if not synced:
-                if not flags & FLAG_FRAME_START:
-                    raise BenchError("stream begins without FRAME_START")
-                synced = True
-            before = assembler.complete_frames
-            assembler.consume(sequence, offset, chunk, flags)
-            if assembler.discarded_frames or assembler.sequence_errors:
-                raise BenchError("partial frame or duplicate/reversed sequence")
-            if assembler.complete_frames != before:
-                longest = max(longest, now - last_frame)
-                if first_latency is None:
-                    first_latency = now - began
-                last_frame = now
-                if now >= deadline and flags & FLAG_FRAME_END:
-                    break
-            observe(assembler, now - began)
+    assembler = None
+    width = height = frame_bytes = 0
+    try:
+        with opener().open(base + "/raw16.stream", timeout=timeout) as response:
+            pixel_format, mode, _ = verify_headers(response, allow_geometry=True)
+            width = int(response.headers["X-T384-Frame-Width"])
+            height = int(response.headers["X-T384-Frame-Height"])
+            frame_bytes = int(response.headers["X-T384-Frame-Bytes"])
+            chunk_max = int(response.headers["X-T384-Chunk-Payload-Max"])
+            assembler = FrameAssembler(None, SourceContract("real", mode), frame_bytes)
+            header, payload = bytearray(36), bytearray(chunk_max)
+            deadline = began + duration
+            synced = False
+            # Finish the frame crossing the deadline; never hide a partial frame.
+            while True:
+                sequence, offset, _, chunk, flags = read_chunk(
+                    response, header, payload, pixel_format, mode,
+                    frame_bytes, width, height, chunk_max)
+                now = time.monotonic()
+                if now - last_frame > max_gap:
+                    raise BenchError(f"no complete frame for {now - last_frame:.3f}s")
+                if not synced:
+                    if not flags & FLAG_FRAME_START:
+                        raise BenchError("stream begins without FRAME_START")
+                    synced = True
+                before = assembler.complete_frames
+                assembler.consume(sequence, offset, chunk, flags)
+                if assembler.discarded_frames or assembler.sequence_errors:
+                    raise BenchError("partial frame or duplicate/reversed sequence")
+                if assembler.complete_frames != before:
+                    longest = max(longest, now - last_frame)
+                    if first_latency is None:
+                        first_latency = now - began
+                    last_frame = now
+                    if now >= deadline and flags & FLAG_FRAME_END:
+                        break
+                observe(assembler, now - began)
+    except Exception as error:
+        elapsed = time.monotonic() - began
+        failure = BenchError(str(error))
+        failure.partial_window = {
+            "elapsed_s": elapsed,
+            "complete_frames": assembler.complete_frames if assembler else 0,
+            "fps": assembler.complete_frames / elapsed if assembler and elapsed else 0,
+            "wire_bytes_per_frame": frame_bytes,
+            "payload_bps": assembler.complete_frames * frame_bytes / elapsed
+            if assembler and elapsed else 0,
+            "decoded_image_bps": assembler.complete_frames * width * height * 2 / elapsed
+            if assembler and elapsed else 0,
+            "sequence_gaps": assembler.sequence_gaps if assembler else 0,
+            "partial_frames": assembler.discarded_frames if assembler else 0,
+            "sequence_errors": assembler.sequence_errors if assembler else 0,
+        }
+        raise failure from error
     elapsed = time.monotonic() - began
     return {"elapsed_s": elapsed, "complete_frames": assembler.complete_frames,
             "fps": assembler.complete_frames / elapsed,
             "payload_bps": assembler.complete_frames * frame_bytes / elapsed,
+            "wire_bytes_per_frame": frame_bytes,
+            "decoded_image_bps": assembler.complete_frames * width * height * 2 / elapsed,
             "sequence_gaps": assembler.sequence_gaps,
             "partial_frames": assembler.discarded_frames,
             "sequence_errors": assembler.sequence_errors,
@@ -140,8 +163,17 @@ def main():
             result["windows"].append(measured)
             print("Reconnect:", json.dumps(measured), flush=True)
     except Exception as error:
+        if hasattr(error, "partial_window"):
+            result["partial_window"] = error.partial_window
         result["errors"].append(str(error))
         print("FAIL:", str(error), flush=True)
+        # Capture recovery state while the host still sees the failed stream.
+        stop.set()
+        worker.join(args.max_gap + 1)
+        try:
+            result["post_failure_diagnostic"] = diag(base, args.max_gap)
+        except Exception as diagnostic_error:
+            result["post_failure_diagnostic_error"] = str(diagnostic_error)
     finally:
         stop.set()
         worker.join(args.max_gap + 1)

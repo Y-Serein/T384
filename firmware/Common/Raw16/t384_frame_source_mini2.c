@@ -16,6 +16,7 @@
 #include "t384_raw16_roi.h"
 #include "t384_raw16_wire.h"
 #include "t384_time.h"
+#include "t384_packed_picture.h"
 
 #if T384_MINI2_DVP_ROW_BYTES != (T384_MINI2_DVP_WIDTH * 2u)
 #error "MINI2 DVP row bytes must equal width times two"
@@ -65,6 +66,9 @@ static bool module_rearm_pending;
 #if T384_MINI2_DMA_BLOCK_ROWS != 1u && \
     T384_MINI2_DMA_BLOCK_ROWS != T384_PIPELINE_CHUNK_ROWS
 #error "DVP DMA block must be one row or one whole pipeline chunk"
+#endif
+#if T384_PIPELINE_PACKED_PICTURE && T384_MINI2_DMA_BLOCK_ROWS != T384_PIPELINE_CHUNK_ROWS
+#error "Packed Picture requires one full DMA block per slot"
 #endif
 #if T384_MINI2_DVP_EXPECTED_ROWS % T384_MINI2_DMA_BLOCK_ROWS != 0u
 #error "DVP frame must contain an integral number of DMA blocks"
@@ -256,6 +260,7 @@ static int mini2_uart0_send_command(
     return !saw_bytes ? 2 : 3;
 }
 
+#if T384_RAW16_PROFILE != 640u
 static int mini2_uart0_send_video_command(uint8_t command_index,
                                           uint8_t output_status,
                                           uint8_t format,
@@ -266,6 +271,7 @@ static int mini2_uart0_send_video_command(uint8_t command_index,
                                    fps);
     return mini2_uart0_send_command(command, NULL, NULL, 0u);
 }
+#endif
 
 static int mini2_uart0_query_class(uint8_t command_class,
                                    uint8_t command_index,
@@ -282,12 +288,14 @@ static int mini2_uart0_query_class(uint8_t command_class,
                                     response_data_length);
 }
 
+#if T384_RAW16_PROFILE != 640u
 static int mini2_uart0_query_vtemp(uint8_t *data, uint16_t *data_length)
 {
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES];
     t384_mini2_build_vtemp_query_command(command);
     return mini2_uart0_send_command(command, data, data_length, 2u);
 }
+#endif
 
 static int mini2_uart0_query(uint8_t command_index,
                              uint8_t response_data_length,
@@ -298,6 +306,7 @@ static int mini2_uart0_query(uint8_t command_index,
                                    response_data_length, data, data_length);
 }
 
+#if T384_RAW16_PROFILE != 640u
 static int mini2_uart0_send_stream_mode(uint8_t mode)
 {
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES];
@@ -335,10 +344,10 @@ static bool mini2_uart0_confirm_digital(void)
         t384_millis() + T384_MINI2_STATE_CONFIRM_TIMEOUT_MS;
     unsigned failures = 0u;
     while ((int32_t)(t384_millis() - deadline) < 0) {
-        uint8_t data[T384_MINI2_DIGITAL_RESPONSE_BYTES] = {0u};
+        uint8_t data[T384_MINI2_DIGITAL_STATE_BYTES] = {0u};
         uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES];
         uint16_t length = 0u;
-        t384_mini2_build_digital_query_command(command);
+        t384_mini2_build_query_command(command, 0x86u, sizeof(data));
         const int result = mini2_uart0_send_command(command, data, &length,
                                                     sizeof(data));
         source_stats.mini2_query_digital_valid =
@@ -382,6 +391,63 @@ static int mini2_uart0_confirm_stream_mode(uint8_t expected, uint8_t *mode)
     }
     return result;
 }
+#endif
+
+#if T384_RAW16_PROFILE == 640u
+/* AC020 SDK 2.4.5 adv_yuv_format_get: class 03, index 8C, one byte.
+ * libircmd.h: 0=UYVY, 1=VYUY, 2=YUYV, 3=YVYU. The prefix alone
+ * cannot establish this ordering. Keep native Picture output for bring-up;
+ * neither TPD nor temperature is enabled through this path. */
+static void mini2_confirm_native_picture(void)
+{
+    source_stats.stream_ready = 0u;
+    source_stats.frame_mode = T384_FRAME_MODE_UNKNOWN;
+    source_stats.pixel_format = 0u;
+    source_stats.mini2_query_yuv_valid = 0u;
+    source_stats.mini2_query_yuv_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_query_yuv_format = UINT32_MAX;
+    source_stats.mini2_control_digital_off_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_analog_off_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_detector30_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_dvp30_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_tpd_set_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_tpd_query_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_tpd_query_mode = 0xFFu;
+    source_stats.mini2_control_picture_set_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_picture_dvp_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_picture_query_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_control_picture_query_mode = 0xFFu;
+    if (source_stats.mini2_pn_valid == 0u ||
+        source_stats.mini2_firmware_version_valid == 0u ||
+        strcmp((const char *)source_stats.mini2_pn, "TIFSC640") != 0 ||
+        strcmp((const char *)source_stats.mini2_firmware_version,
+               "01.00.01.03") != 0 ||
+        source_stats.mini2_query_stream_mode_valid == 0u ||
+        source_stats.mini2_query_stream_mode_0x85 !=
+            T384_MINI2_STREAM_MODE_PICTURE) {
+        return;
+    }
+    source_stats.mini2_control_picture_query_status = 1u;
+    source_stats.mini2_control_picture_query_valid = 1u;
+    source_stats.mini2_control_picture_query_mode = T384_MINI2_STREAM_MODE_PICTURE;
+    uint8_t format = 0xFFu;
+    uint16_t length = 0u;
+    const int result = mini2_uart0_query_class(0x03u, 0x8Cu, 0u, 1u,
+                                               &format, &length);
+    source_stats.mini2_query_yuv_status = (uint32_t)result;
+    source_stats.mini2_query_yuv_valid = result == 1 && length == 1u;
+    if (source_stats.mini2_query_yuv_valid == 0u) {
+        return;
+    }
+    source_stats.mini2_query_yuv_format = format;
+    if (format > 3u) {
+        return; /* Valid reply with an unsupported enum is not a known format. */
+    }
+    source_stats.frame_mode = T384_FRAME_MODE_PICTURE;
+    source_stats.pixel_format = T384_FRAME_PIXEL_FORMAT_UYVY;
+    source_stats.stream_ready = 1u;
+}
+#endif
 
 #if T384_RAW16_PROFILE == 384u
 /* Fault-only main-task operation with local DMA/IRQ stopped. Each probe is
@@ -392,10 +458,10 @@ static void mini2_probe_and_rearm(void)
 {
     ++source_stats.dvp_module_probes;
     source_stats.stream_ready = 0u;
-    uint8_t digital[T384_MINI2_DIGITAL_RESPONSE_BYTES] = {0u};
+    uint8_t digital[T384_MINI2_DIGITAL_STATE_BYTES] = {0u};
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES];
     uint16_t length = 0u;
-    t384_mini2_build_digital_query_command(command);
+    t384_mini2_build_query_command(command, 0x86u, sizeof(digital));
     const int result = mini2_uart0_send_command(command, digital, &length,
                                                 sizeof(digital));
     source_stats.mini2_query_digital_valid = result == 1 && length == sizeof(digital);
@@ -448,6 +514,9 @@ static void mini2_probe_and_rearm(void)
  * establishes the active digital output and data domain. */
 static void mini2_configure_stream(void)
 {
+#if T384_RAW16_PROFILE == 640u
+    mini2_confirm_native_picture();
+#else
     source_stats.mini2_control_digital_off_status =
         (uint32_t)mini2_uart0_send_video_command(0x46u, 0u, 0u, 0u);
     source_stats.mini2_control_analog_off_status =
@@ -479,7 +548,8 @@ static void mini2_configure_stream(void)
     source_stats.mini2_control_dvp30_status =
         (uint32_t)mini2_uart0_send_video_command(
             0x46u, 1u, 1u, T384_MINI2_DVP_FPS);
-    if (!mini2_uart0_confirm_digital()) {
+    const bool digital_confirmed = mini2_uart0_confirm_digital();
+    if (!digital_confirmed) {
         return;
     }
     source_stats.mini2_control_tpd_set_status =
@@ -526,6 +596,7 @@ static void mini2_configure_stream(void)
         source_stats.pixel_format = T384_FRAME_PIXEL_FORMAT_UYVY;
         source_stats.stream_ready = 1u;
     }
+#endif
 }
 
 static int mini2_uart0_query_info(uint8_t subcommand,
@@ -652,6 +723,63 @@ static void mini2_dvp_configure(void)
                RB_DVP_IE_STP_FRM;
 }
 
+/* Replace the existing DMA-to-pipeline copy, without mutating either DMA bank.
+ * Both banks and pipeline block destinations are at least 4-byte aligned.
+ * memcpy keeps word access alias-safe; alignment hints permit RV32 lw/sw.
+ * The loop is bounded by one DMA block and runs only for a confirmed format. */
+static bool mini2_copy_dma_block(uint8_t *destination, const uint8_t *source)
+{
+#if T384_PIPELINE_PACKED_PICTURE
+    if (source_stats.frame_mode != T384_FRAME_MODE_PICTURE ||
+        source_stats.mini2_query_yuv_valid == 0u ||
+        !t384_picture_pack(destination, source, T384_MINI2_DMA_BLOCK_BYTES,
+                           source_stats.mini2_query_yuv_format)) {
+        ++source_stats.picture_pack_rejected_blocks;
+        return false;
+    }
+    return true;
+#else
+#if T384_MINI2_DVP_Y16_LITTLE_ENDIAN || T384_RAW16_PROFILE == 640u
+#if T384_MINI2_DMA_BLOCK_BYTES % 4u != 0u
+#error "Pixel word-copy normalization requires whole 4-byte words"
+#endif
+    uint32_t conversion = 0u;
+#if T384_MINI2_DVP_Y16_LITTLE_ENDIAN
+    if (source_stats.frame_mode == T384_FRAME_MODE_TPD_Y16) conversion = 2u;
+#endif
+#if T384_RAW16_PROFILE == 640u
+    if (source_stats.frame_mode == T384_FRAME_MODE_PICTURE &&
+        source_stats.mini2_query_yuv_valid != 0u) {
+        conversion = source_stats.mini2_query_yuv_format;
+    }
+#endif
+    if (conversion != 0u && conversion <= 3u) {
+        source = __builtin_assume_aligned(source, 4u);
+        destination = __builtin_assume_aligned(destination, 4u);
+        for (uint32_t offset = 0u; offset < T384_MINI2_DMA_BLOCK_BYTES;
+             offset += 4u) {
+            uint32_t word;
+            memcpy(&word, source + offset, sizeof(word));
+            if (conversion == 1u) { /* VYUY -> UYVY */
+                word = (word & 0xFF00FF00u) |
+                       ((word & 0x000000FFu) << 16) |
+                       ((word & 0x00FF0000u) >> 16);
+            } else if (conversion == 2u) { /* YUYV or Y16LE */
+                word = ((word & 0x00FF00FFu) << 8) |
+                       ((word & 0xFF00FF00u) >> 8);
+            } else { /* YVYU -> UYVY */
+                word = (word << 8) | (word >> 24);
+            }
+            memcpy(destination + offset, &word, sizeof(word));
+        }
+        return true;
+    }
+#endif
+    memcpy(destination, source, T384_MINI2_DMA_BLOCK_BYTES);
+    return true;
+#endif
+}
+
 static void finish_frame_isr(uint32_t now)
 {
     const bool roi_capture_complete =
@@ -771,7 +899,8 @@ void DVP_IRQHandler(void)
         uint8_t *destination = NULL;
         uint16_t capacity = 0u;
 #if T384_DUALCORE
-        const bool frame_accepted = t384_frame_pipeline_begin_frame(
+        const bool frame_accepted = source_stats.stream_ready != 0u &&
+            t384_frame_pipeline_begin_frame(
             current_frame_sequence, now, t384_frame_source_mode_flags());
         whole_frame_skipped = !frame_accepted;
         if (frame_accepted &&
@@ -781,7 +910,7 @@ void DVP_IRQHandler(void)
                 t384_frame_source_mode_flags()) &&
 #endif
             t384_frame_pipeline_acquire_write(&destination, &capacity) &&
-            capacity >= T384_PIPELINE_CHUNK_BYTES) 
+            capacity >= T384_PIPELINE_STORAGE_CHUNK_BYTES)
         {
             active_chunk = destination;
             frame_open = true;
@@ -840,15 +969,25 @@ void DVP_IRQHandler(void)
                 first_row_prefix_captured = true;
             }
             for (uint32_t row = 0u; row < T384_MINI2_DMA_BLOCK_ROWS; ++row) {
+#if T384_MINI2_DVP_Y16_LITTLE_ENDIAN
+                t384_raw16_roi_add_le16_row(&roi_accumulator, first_row + row,
+#else
                 t384_raw16_roi_add_be16_row(&roi_accumulator, first_row + row,
+#endif
                     dvp_row_sink[completed_sink] + row * T384_MINI2_DVP_ROW_BYTES,
                     T384_MINI2_DVP_ROW_BYTES);
             }
             if (frame_open && active_chunk != NULL) {
-                memcpy(active_chunk + current_chunk_rows * T384_MINI2_DVP_ROW_BYTES,
-                       dvp_row_sink[completed_sink],
-                       T384_MINI2_DMA_BLOCK_BYTES);
-                current_chunk_rows += T384_MINI2_DMA_BLOCK_ROWS;
+                if (mini2_copy_dma_block(
+                    active_chunk + current_chunk_rows * T384_MINI2_DVP_ROW_BYTES,
+                    dvp_row_sink[completed_sink])) {
+                    current_chunk_rows += T384_MINI2_DMA_BLOCK_ROWS;
+                } else {
+                    current_frame_bad = 1u;
+                    t384_frame_pipeline_abort_frame();
+                    frame_open = false;
+                    active_chunk = NULL;
+                }
             }
 #if T384_MINI2_DMA_BLOCK_ROWS == 1u
             if ((dma_toggle & 1u) == 0u)
@@ -883,7 +1022,10 @@ void DVP_IRQHandler(void)
                 uint16_t capacity = 0u;
                 current_chunk_rows = 0u;
                 if (!t384_frame_pipeline_acquire_write(&destination, &capacity) ||
-                    capacity < T384_PIPELINE_CHUNK_BYTES) {
+                    capacity < T384_PIPELINE_STORAGE_CHUNK_BYTES) {
+#if T384_PIPELINE_STREAMING
+                    whole_frame_skipped = true;
+#endif
                     current_frame_bad = 1u;
                     t384_frame_pipeline_abort_frame();
                     frame_open = false;
@@ -943,6 +1085,7 @@ bool t384_frame_source_init(void)
     source_stats.stream_ready = 0u;
     source_stats.frame_mode = T384_FRAME_MODE_UNKNOWN;
     source_stats.pixel_format = 0u;
+    source_stats.mini2_query_yuv_format = UINT32_MAX;
     mini2_dvp_gpio_init();
     mini2_uart0_init();
     mini2_dvp_configure();
@@ -950,24 +1093,34 @@ bool t384_frame_source_init(void)
 
     uint8_t query_data[32] = {0};
     uint16_t query_length = 0u;
+#if T384_RAW16_PROFILE != 640u
     (void)mini2_uart0_query_detector_state();
 
     memset(query_data, 0, sizeof(query_data));
     query_length = 0u;
     uint8_t digital_command[T384_MINI2_DVP30_COMMAND_BYTES];
-    t384_mini2_build_digital_query_command(digital_command);
+    t384_mini2_build_query_command(digital_command, 0x86u,
+                                  T384_MINI2_DIGITAL_STATE_BYTES);
     const int digital_query = mini2_uart0_send_command(
         digital_command, query_data, &query_length,
-        T384_MINI2_DIGITAL_RESPONSE_BYTES);
+        T384_MINI2_DIGITAL_STATE_BYTES);
     source_stats.mini2_query_digital_status =
         source_stats.mini2_control_ack_status;
     if (digital_query == 1 &&
-        query_length == T384_MINI2_DIGITAL_RESPONSE_BYTES) {
+        query_length == T384_MINI2_DIGITAL_STATE_BYTES) {
         source_stats.mini2_query_digital_valid = 1u;
         source_stats.mini2_query_digital_enabled = query_data[0];
         source_stats.mini2_query_digital_format = query_data[1];
         source_stats.mini2_query_digital_fps = query_data[2];
     }
+#else
+    source_stats.mini2_query_detector_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_query_digital_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_query_auto_ffc_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_query_module_temp_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_query_vtemp_status = T384_MINI2_CONTROL_SKIPPED;
+    source_stats.mini2_query_uptime_status = T384_MINI2_CONTROL_SKIPPED;
+#endif
 
     memset(query_data, 0, sizeof(query_data));
     query_length = 0u;
@@ -1033,6 +1186,7 @@ bool t384_frame_source_init(void)
 
     memset(query_data, 0, sizeof(query_data));
     query_length = 0u;
+#if T384_RAW16_PROFILE != 640u
     const int auto_ffc_query = mini2_uart0_query_class(
         0x02u, 0x81u, 0u, 1u, query_data, &query_length);
     source_stats.mini2_query_auto_ffc_status =
@@ -1081,6 +1235,7 @@ bool t384_frame_source_init(void)
             ((uint32_t)query_data[2] << 16) |
             ((uint32_t)query_data[3] << 24);
     }
+#endif
 
     /* Volatile setup only; 0x49 parameter persistence remains absent. */
     mini2_configure_stream();
@@ -1216,10 +1371,18 @@ void t384_module_file_port_resume(void)
 
 const char *t384_frame_source_name(void)
 {
+#if T384_RAW16_PROFILE == 640u
+    return "mini2-dvp-v5f-640-sram-picture-v6";
+#else
+#if T384_PIPELINE_STREAMING
+    return "mini2-dvp-v5f-block-ring-60-v3";
+#else
 #if T384_DUALCORE
     return "mini2-dvp-v5f-double-frame-v2";
 #else
     return "mini2-dvp-y16-picture-v7";
+#endif
+#endif
 #endif
 }
 
@@ -1355,6 +1518,10 @@ void t384_frame_source_get_stats(t384_frame_source_stats_t *out)
             source_stats.mini2_query_stream_mode_status;
         out->mini2_query_stream_mode_0x85 =
             source_stats.mini2_query_stream_mode_0x85;
+        out->mini2_query_yuv_valid = source_stats.mini2_query_yuv_valid;
+        out->mini2_query_yuv_status = source_stats.mini2_query_yuv_status;
+        out->mini2_query_yuv_format = source_stats.mini2_query_yuv_format;
+        out->picture_pack_rejected_blocks = source_stats.picture_pack_rejected_blocks;
         out->mini2_query_auto_ffc_valid =
             source_stats.mini2_query_auto_ffc_valid;
         out->mini2_query_auto_ffc_status =

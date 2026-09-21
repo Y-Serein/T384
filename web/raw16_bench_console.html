@@ -112,8 +112,8 @@
     .copy { margin-bottom: 0; font-size: 13px; line-height: 1.55; }
     .body { padding: 20px; }
 
-    .viewer { position: relative; aspect-ratio: 256 / 192; overflow: hidden; display: grid; place-items: center; background: #111315; }
-    .viewer canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
+    .viewer { position: relative; aspect-ratio: 256 / 192; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #111315; }
+    .viewer canvas { width: 100%; height: auto; max-height: 100%; display: block; object-fit: contain; image-rendering: auto; }
     .viewer #annotations { position: absolute; inset: 0; touch-action: none; cursor: crosshair; }
     .viewer-overlay { pointer-events: none; }
     .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); }
@@ -371,15 +371,17 @@
     let RAW16_HEIGHT = 192;
     let RAW16_FRAME_BYTES = RAW16_WIDTH * RAW16_HEIGHT * 2;
     const RAW16_WIRE_MAGIC = 0x31523354;
-    const RAW16_WIRE_VERSION = 1;
+    let RAW16_WIRE_VERSION = 1;
     const RAW16_CHUNK_HEADER_BYTES = 36;
     let RAW16_CHUNK_PAYLOAD_MAX = 4096;
     const CHUNK_FLAG_FRAME_START = 0x0001;
     const CHUNK_FLAG_FRAME_END = 0x0002;
     const CHUNK_FLAG_TPD_Y16 = 0x0010;
     const CHUNK_FLAG_PICTURE_UYVY = 0x0020;
+    const CHUNK_FLAG_PICTURE_PACKED = 0x0040;
     const PIXEL_FORMAT_Y16_BE = 2;
     const PIXEL_FORMAT_UYVY = 3;
+    const PIXEL_FORMAT_PACKED_UYVY = 4;
     let streamPixelFormat = 0;
     let y16ZeroC = NaN;
     let y16CountsPerC = NaN;
@@ -908,14 +910,13 @@
       updateRoi();
     }
 
-    function acceptRaw16Frame(frame, frameIndex) {
+    function acceptRaw16Frame(frame, frameIndex, processStarted = performance.now()) {
       if (previousFrameIndex !== null) {
         const delta = (frameIndex - previousFrameIndex) >>> 0;
         if (delta > 1 && delta < 0x80000000) browserSequenceGaps += delta - 1;
         else if (delta !== 1) browserSequenceErrors += 1;
       }
       previousFrameIndex = frameIndex;
-      const processStarted = performance.now();
       renderRaw16Frame(frame);
       browserProcessMs = performance.now() - processStarted;
       const now = performance.now();
@@ -951,6 +952,27 @@
       return crc;
     }
 
+    function expandPackedPicture(packed, output) {
+      const blockBytes = RAW16_WIDTH * 4 + 32;
+      const blocks = RAW16_HEIGHT / 4;
+      if (packed.length !== blockBytes * blocks ||
+          output.length !== RAW16_WIDTH * RAW16_HEIGHT * 2) return false;
+      for (let block = 0; block < blocks; block += 1) {
+        const base = block * blockBytes;
+        const u = packed[base], v = packed[base + 2];
+        const outputBase = block * RAW16_WIDTH * 8;
+        for (let pixel = 0; pixel < RAW16_WIDTH * 4; pixel += 2) {
+          const input = base + 32 + pixel;
+          const index = outputBase + pixel * 2;
+          output[index] = u;
+          output[index + 1] = packed[input];
+          output[index + 2] = v;
+          output[index + 3] = packed[input + 1];
+        }
+      }
+      return true;
+    }
+
     function decodeChunkHeader(header) {
       const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
       if (view.getUint32(0, true) !== RAW16_WIRE_MAGIC ||
@@ -968,7 +990,12 @@
       const flags = view.getUint16(30, true);
       const modeFlags = flags & (CHUNK_FLAG_TPD_Y16 | CHUNK_FLAG_PICTURE_UYVY);
       if ((streamPixelFormat === PIXEL_FORMAT_Y16_BE && modeFlags !== CHUNK_FLAG_TPD_Y16) ||
-          (streamPixelFormat === PIXEL_FORMAT_UYVY && modeFlags !== CHUNK_FLAG_PICTURE_UYVY)) return null;
+          (streamPixelFormat === PIXEL_FORMAT_UYVY && modeFlags !== CHUNK_FLAG_PICTURE_UYVY) ||
+          (streamPixelFormat === PIXEL_FORMAT_PACKED_UYVY &&
+            (modeFlags !== CHUNK_FLAG_PICTURE_UYVY ||
+             !(flags & CHUNK_FLAG_PICTURE_PACKED) ||
+             payloadBytes !== RAW16_CHUNK_PAYLOAD_MAX ||
+             frameOffset % RAW16_CHUNK_PAYLOAD_MAX !== 0))) return null;
       return {
         sequence: view.getUint32(8, true),
         offset: frameOffset,
@@ -1002,6 +1029,8 @@
     }
 
     function stopStream() {
+      streamLoaded = false;
+      $('snapshotBtn').disabled = true;
       clearTimeout(streamTimer);
       streamTimer = 0;
       clearInterval(streamWatchdogTimer);
@@ -1027,6 +1056,13 @@
       browserDiscardedFrames = 0;
       browserProcessMs = 0;
       let frame = null;
+      let expandedFrame = null;
+      let reader = null;
+      let readerCancelPromise = null;
+      const cancelReader = () => {
+        if (reader && !readerCancelPromise) readerCancelPromise = reader.cancel().catch(() => {});
+        return readerCancelPromise;
+      };
       const header = new Uint8Array(RAW16_CHUNK_HEADER_BYTES);
       const parser = {
         headerOffset: 0,
@@ -1042,6 +1078,7 @@
           cache: 'no-store',
           signal: controller.signal
         });
+        if (controller.signal.aborted || streamController !== controller) return;
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const streamWidth = Number(response.headers.get('X-T384-Frame-Width'));
         const streamHeight = Number(response.headers.get('X-T384-Frame-Height'));
@@ -1050,34 +1087,46 @@
         const streamFormatCode = Number(response.headers.get('X-T384-Pixel-Format-Code'));
         const streamMode = response.headers.get('X-T384-Frame-Mode');
         const temperatureModel = response.headers.get('X-T384-Temperature-Model');
-        if (response.headers.get('X-T384-Format') !== 'T384-FRAME-CHUNK-V1' ||
-            Number(response.headers.get('X-T384-Wire-Version')) !== RAW16_WIRE_VERSION ||
+        const packedPicture = streamWidth === 640 && streamHeight === 512 &&
+          streamFormatCode === PIXEL_FORMAT_PACKED_UYVY;
+        const wireVersion = packedPicture ? 2 : 1;
+        if (response.headers.get('X-T384-Format') !== 'T384-FRAME-CHUNK-V' + wireVersion ||
+            Number(response.headers.get('X-T384-Wire-Version')) !== wireVersion ||
             Number(response.headers.get('X-T384-Chunk-Header-Bytes')) !== RAW16_CHUNK_HEADER_BYTES ||
             !((streamWidth === 256 && streamHeight === 192) ||
-              (streamWidth === 384 && streamHeight === 288)) ||
-            streamFrameBytes !== streamWidth * streamHeight * 2 ||
-            ![PIXEL_FORMAT_Y16_BE, PIXEL_FORMAT_UYVY].includes(streamFormatCode) ||
+              (streamWidth === 384 && streamHeight === 288) ||
+              (streamWidth === 640 && streamHeight === 512)) ||
+            streamFrameBytes !== (packedPicture
+              ? (streamWidth * 4 + 32) * (streamHeight / 4)
+              : streamWidth * streamHeight * 2) ||
+            ![PIXEL_FORMAT_Y16_BE, PIXEL_FORMAT_UYVY, PIXEL_FORMAT_PACKED_UYVY].includes(streamFormatCode) ||
             (streamFormatCode === PIXEL_FORMAT_Y16_BE && streamMode !== 'tpd') ||
             (streamFormatCode === PIXEL_FORMAT_UYVY && streamMode !== 'picture-fallback') ||
-            (streamChunkMax !== 4096 && streamChunkMax !== 6144)) {
+            (packedPicture && streamMode !== 'picture-fallback') ||
+            streamChunkMax !== (packedPicture ? streamWidth * 4 + 32
+              : streamWidth * 2 * (streamWidth === 640 ? 4 : 8))) {
           throw new Error('MINI2 帧流格式不匹配');
         }
         RAW16_WIDTH = streamWidth;
         RAW16_HEIGHT = streamHeight;
         RAW16_FRAME_BYTES = streamFrameBytes;
         RAW16_CHUNK_PAYLOAD_MAX = streamChunkMax;
+        RAW16_WIRE_VERSION = wireVersion;
         streamPixelFormat = streamFormatCode;
         const linearParameters = (response.headers.get('X-T384-Y16-Linear-X100') || '')
           .split(',').map(Number);
         y16ZeroC = linearParameters[0] / 100;
         y16CountsPerC = linearParameters[1] / 100;
-        if (streamWidth !== 256 || streamHeight !== 192 || temperatureModel !== 'experimental-blackbody-2point-v1' ||
+        if (!((streamWidth === 256 && streamHeight === 192) ||
+              (streamWidth === 384 && streamHeight === 288)) ||
+            temperatureModel === 'unavailable' || !temperatureModel ||
             linearParameters.length !== 2 || !linearParameters.every(Number.isFinite) ||
             y16CountsPerC <= 0) {
           y16ZeroC = NaN;
           y16CountsPerC = NaN;
         }
-        const formatName = streamPixelFormat === PIXEL_FORMAT_Y16_BE ? 'TPD / Y16BE' : 'Picture / UYVY 回退';
+        const formatName = streamPixelFormat === PIXEL_FORMAT_Y16_BE ? 'TPD / Y16BE' :
+          packedPicture ? 'Picture / 无损打包 UYVY' : 'Picture / UYVY 回退';
         $('formatSummary').textContent = formatName +
           (streamPixelFormat === PIXEL_FORMAT_Y16_BE && Number.isFinite(y16CountsPerC)
             ? ' · 实验温度映射' : ' · 温度不可用');
@@ -1096,10 +1145,13 @@
         $('stream').parentElement.style.aspectRatio = RAW16_WIDTH + '/' + RAW16_HEIGHT;
         updateRoi();
         frame = new Uint8Array(RAW16_FRAME_BYTES);
+        expandedFrame = packedPicture ? new Uint8Array(streamWidth * streamHeight * 2) : null;
         if (!response.body) throw new Error('浏览器不支持流式读取');
-        const reader = response.body.getReader();
+        reader = response.body.getReader();
+        controller.signal.addEventListener('abort', cancelReader, { once: true });
         while (true) {
           const result = await reader.read();
+          if (controller.signal.aborted || streamController !== controller) return;
           if (result.done) throw new Error('RAW16 流已结束');
           let inputOffset = 0;
           while (inputOffset < result.value.length) {
@@ -1152,7 +1204,16 @@
               if (endsFrame) {
                 if (parser.frameValid && parser.chunkAccepted &&
                     parser.expectedOffset === RAW16_FRAME_BYTES) {
-                  acceptRaw16Frame(frame, parser.chunk.sequence);
+                  if (packedPicture) {
+                    const processStarted = performance.now();
+                    if (expandPackedPicture(frame, expandedFrame)) {
+                      acceptRaw16Frame(expandedFrame, parser.chunk.sequence, processStarted);
+                    } else {
+                      browserDiscardedFrames += 1;
+                    }
+                  } else {
+                    acceptRaw16Frame(frame, parser.chunk.sequence);
+                  }
                 } else {
                   browserDiscardedFrames += 1;
                 }
@@ -1167,13 +1228,19 @@
           }
         }
       } catch (error) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || streamController !== controller) return;
         if (parser.assemblingSequence !== null) browserDiscardedFrames += 1;
         if (streamController === controller) streamController = null;
         streamLoaded = false;
-        const delay = Math.min(5000, 500 * Math.pow(2, Math.min(streamAttempt, 4)));
-        scheduleStreamRetry(delay, '画面连接失败，自动重试中');
+        setPill($('framePill'), '流已断开', 'bad');
+        $('frameState').textContent = '流已断开，请点击“重连画面”';
+        $('streamPlaceholder').hidden = false;
       } finally {
+        controller.signal.removeEventListener('abort', cancelReader);
+        if (reader) {
+          await cancelReader();
+          reader.releaseLock();
+        }
         if (streamController === controller) streamController = null;
       }
     }
@@ -1200,6 +1267,7 @@
       $('streamPlaceholder').hidden = false;
       streamTimer = setTimeout(() => {
         streamTimer = 0;
+        if (document.hidden) return;
         streamAttempt += 1;
         void connectRaw16Stream();
       }, delay);
@@ -1209,7 +1277,10 @@
       if (document.hidden || !streamController || streamTimer) return;
       const reference = lastFrameAt || streamStartedAt;
       if (reference && performance.now() - reference > 5000) {
-        scheduleStreamRetry(500, '流超过 5 秒无新帧，正在重连');
+        stopStream();
+        setPill($('framePill'), '流已断开', 'bad');
+        $('frameState').textContent = '超过 5 秒无新帧，请点击“重连画面”';
+        $('streamPlaceholder').hidden = false;
       }
     }
 
@@ -1297,13 +1368,20 @@
     $('capabilityRetryBtn').addEventListener('click', detectCapabilities);
     addEventListener('resize', renderChart, { passive: true });
     addEventListener('pagehide', () => { stopStream(); clearTimeout(pollTimer); });
+    function resumePage() {
+      if (document.hidden) return;
+      clearTimeout(pollTimer);
+      poll();
+    }
+    addEventListener('pageshow', event => { if (event.persisted) resumePage(); });
+    addEventListener('online', () => {
+      if (!document.hidden) poll();
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         stopStream();
-        streamLoaded = false;
       } else {
-        poll();
-        if (!streamLoaded) scheduleStreamRetry(0, '页面恢复，正在重连画面');
+        resumePage();
       }
     });
 

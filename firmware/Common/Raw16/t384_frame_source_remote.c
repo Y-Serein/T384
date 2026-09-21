@@ -7,6 +7,7 @@
 
 static t384_frame_source_stats_t source_snapshot;
 static t384_module_file_status_t file_snapshot;
+static uint32_t cached_snapshot_sequence = UINT32_MAX;
 
 static void read_snapshot(void)
 {
@@ -14,12 +15,14 @@ static void read_snapshot(void)
     for (unsigned attempt = 0u; attempt < 16u; ++attempt) {
         const uint32_t before = __atomic_load_n(&s->snapshot_sequence, __ATOMIC_ACQUIRE);
         if (before & 1u) continue;
+        if (before == cached_snapshot_sequence) return;
         t384_frame_source_stats_t source = s->source;
         t384_module_file_status_t file = s->file;
         T384_MEMORY_BARRIER();
         if (before == __atomic_load_n(&s->snapshot_sequence, __ATOMIC_ACQUIRE)) {
             source_snapshot = source;
             file_snapshot = file;
+            cached_snapshot_sequence = before;
             return;
         }
     }
@@ -73,7 +76,14 @@ void t384_frame_source_task(void)
     }
     read_snapshot();
 }
-const char *t384_frame_source_name(void) { return "mini2-dvp-v5f-double-frame-v2"; }
+const char *t384_frame_source_name(void)
+{
+#if T384_RAW16_PROFILE == 640u
+    return "mini2-dvp-v5f-640-sram-picture-v6";
+#else
+    return "mini2-dvp-v5f-double-frame-v2";
+#endif
+}
 
 bool t384_frame_source_stream_ready(void)
 {

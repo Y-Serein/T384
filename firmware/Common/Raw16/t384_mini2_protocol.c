@@ -139,6 +139,18 @@ void t384_mini2_build_class_query_command(
     command[22] = (uint8_t)(crc >> 8);
 }
 
+bool t384_mini2_build_tpd_parameters_query_command(
+    uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES], uint8_t gain)
+{
+    if (command == NULL || gain > 1u) return false;
+    t384_mini2_build_class_query_command(command, 0x26u, 0x8Au, gain, 6u);
+    command[5] = 0x01u;
+    const uint16_t crc = t384_mini2_crc16_xmodem(command + 5u, 16u);
+    command[21] = (uint8_t)crc;
+    command[22] = (uint8_t)(crc >> 8);
+    return true;
+}
+
 void t384_mini2_build_vtemp_query_command(
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES])
 {
@@ -153,6 +165,20 @@ void t384_mini2_build_vtemp_query_command(
     const uint16_t crc = t384_mini2_crc16_xmodem(command + 5u, 16u);
     command[21] = (uint8_t)crc;
     command[22] = (uint8_t)(crc >> 8);
+}
+
+bool t384_mini2_build_calibration_state_query_command(uint8_t command[23], uint8_t field)
+{
+    if (!command || field>3u) return false;
+    if (field==1u) { t384_mini2_build_vtemp_query_command(command); return true; }
+    t384_mini2_build_class_query_command(command,field==0u?0x2Fu:0x02u,
+                                        field==3u?0x83u:0x81u,0u,1u);
+    if (field==0u) {
+        command[5]=0x01u;
+        const uint16_t crc=t384_mini2_crc16_xmodem(command+5u,16u);
+        command[21]=(uint8_t)crc; command[22]=(uint8_t)(crc>>8);
+    }
+    return true;
 }
 
 void t384_mini2_build_info_query_command(

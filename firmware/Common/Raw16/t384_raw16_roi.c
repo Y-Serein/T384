@@ -42,10 +42,11 @@ void t384_raw16_roi_reset(t384_raw16_roi_accumulator_t *accumulator)
     accumulator->le_minimum = UINT16_MAX;
 }
 
-void t384_raw16_roi_add_be16_row(t384_raw16_roi_accumulator_t *accumulator,
+static void add_row(t384_raw16_roi_accumulator_t *accumulator,
                                  uint32_t row_index,
                                  const uint8_t *row,
-                                 size_t row_bytes)
+                                 size_t row_bytes,
+                                 bool input_little_endian)
 {
     const uint32_t roi_x = (T384_RAW16_WIDTH - T384_RAW16_ROI_WIDTH) / 2u;
     const uint32_t roi_y = (T384_RAW16_HEIGHT - T384_RAW16_ROI_HEIGHT) / 2u;
@@ -56,10 +57,13 @@ void t384_raw16_roi_add_be16_row(t384_raw16_roi_accumulator_t *accumulator,
     }
 
     for (uint32_t x = roi_x; x < roi_x + T384_RAW16_ROI_WIDTH; ++x) {
+        const uint32_t offset = x * 2u;
+        const uint8_t high = row[offset + (input_little_endian ? 1u : 0u)];
+        const uint8_t low = row[offset + (input_little_endian ? 0u : 1u)];
         const uint16_t sample =
-            ((uint16_t)row[x * 2u] << 8) | (uint16_t)row[x * 2u + 1u];
+            ((uint16_t)high << 8) | low;
         const uint16_t le_sample =
-            ((uint16_t)row[x * 2u + 1u] << 8) | (uint16_t)row[x * 2u];
+            ((uint16_t)low << 8) | high;
         accumulator->sum += sample;
         accumulator->sum_squares += (uint64_t)sample * sample;
         if (sample < accumulator->minimum) {
@@ -78,6 +82,22 @@ void t384_raw16_roi_add_be16_row(t384_raw16_roi_accumulator_t *accumulator,
         }
         ++accumulator->sample_count;
     }
+}
+
+void t384_raw16_roi_add_be16_row(t384_raw16_roi_accumulator_t *accumulator,
+                                 uint32_t row_index,
+                                 const uint8_t *row,
+                                 size_t row_bytes)
+{
+    add_row(accumulator, row_index, row, row_bytes, false);
+}
+
+void t384_raw16_roi_add_le16_row(t384_raw16_roi_accumulator_t *accumulator,
+                                 uint32_t row_index,
+                                 const uint8_t *row,
+                                 size_t row_bytes)
+{
+    add_row(accumulator, row_index, row, row_bytes, true);
 }
 
 void t384_raw16_roi_snapshot(const t384_raw16_roi_accumulator_t *accumulator,

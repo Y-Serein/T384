@@ -220,15 +220,13 @@ SECTIONS
     .t384_frame1_data (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame1_data)) } >FRAME1_DATA
     .t384_dma (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_dma)) } >DMA_SHARED
     .t384_ipc (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_ipc)) } >IPC
-    ASSERT(SIZEOF(.t384_frame1_itcm) == 98304, "Frame1 ITCM size")
-    ASSERT(SIZEOF(.t384_frame1_dtcm) == 18432, "Frame1 DTCM size")
-    ASSERT(SIZEOF(.t384_frame1_code) == 43008, "Frame1 shared code size")
-    ASSERT(SIZEOF(.t384_frame1_data) == 61440, "Frame1 shared data size")
+    ASSERT(SIZEOF(.t384_frame1_itcm) == 98304 || SIZEOF(.t384_frame1_itcm) == 384 || SIZEOF(.t384_frame1_itcm) == 2048, "Frame1 ITCM size")
+    ASSERT(SIZEOF(.t384_frame1_dtcm) == 18432 || SIZEOF(.t384_frame1_dtcm) == 32 || SIZEOF(.t384_frame1_dtcm) == 18144, "Frame1 DTCM size")
+    ASSERT(SIZEOF(.t384_frame1_code) == 43008 || SIZEOF(.t384_frame1_code) == 32 || SIZEOF(.t384_frame1_code) == 41472, "Frame1 shared code size")
+    ASSERT(SIZEOF(.t384_frame1_data) == 61440 || SIZEOF(.t384_frame1_data) == 32 || SIZEOF(.t384_frame1_data) == 56960, "Frame1 shared data size")
     ASSERT(_start == 0x30000, "V5F wake address must match entry")
-    ASSERT(SIZEOF(.t384_frame) == 221184 || SIZEOF(.t384_frame) == 98304, "Unexpected full-frame size")
+    ASSERT(SIZEOF(.t384_frame) == 147456 || SIZEOF(.t384_frame) == 220320 || SIZEOF(.t384_frame) == 221184 || SIZEOF(.t384_frame) == 98304, "Unexpected capture buffer size")
     ASSERT(SIZEOF(.t384_ipc) <= 1024, "IPC exceeds 1 KiB")
     ASSERT(_ebss + 8192 <= _heap_end, "V5F needs 8 KiB heap margin")
 }
-
-
 

@@ -81,6 +81,29 @@ void tud_network_xmit(void *ref, uint16_t arg);
 // submit the partially filled NCM NTB without waiting for another datagram
 void tud_network_xmit_flush(void);
 
+// Read-only NCM transmit state for device-side throughput diagnostics.
+// This does not change packet scheduling or protocol behavior.
+typedef struct {
+  uint16_t xmit_max_ntb_size;
+  uint16_t xmit_max_datagrams;
+  uint8_t xmit_free_ntb;
+  uint8_t xmit_ready_ntb;
+  uint8_t xmit_glue_active;
+  uint8_t xmit_tinyusb_active;
+  uint16_t xmit_glue_datagrams;
+  uint32_t xmit_ntb_submit;
+  uint32_t xmit_ntb_complete;
+  uint32_t xmit_ntb_errors;
+  uint32_t xmit_ntb_bytes;
+  uint32_t xmit_ntb_datagrams;
+  uint32_t xmit_ntb_1;
+  uint32_t xmit_ntb_2_4;
+  uint32_t xmit_ntb_5_8;
+  uint32_t xmit_ntb_9_plus;
+} tud_network_ncm_diag_t;
+
+void tud_network_ncm_diag_get(tud_network_ncm_diag_t *out);
+
 //--------------------------------------------------------------------+
 // Application Callbacks (WEAK is optional)
 //--------------------------------------------------------------------+

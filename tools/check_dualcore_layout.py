@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="t384-dual-link-") as temp:
 t384_dualcore_shared_t t384_dualcore_shared
     __attribute__((section(".t384_ipc"), aligned(32)));
 #ifdef Core_V5F
-uint8_t t384_dualcore_frame[T384_RAW16_FRAME_BYTES]
+uint8_t t384_dualcore_frame[T384_CAPTURE_BUFFER_BYTES]
     __attribute__((section(".t384_frame"), aligned(32)));
 uint8_t staging[12288] __attribute__((section(".t384_dma"), aligned(32)));
 uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES] __attribute__((section(".t384_frame1_itcm"), aligned(32)));
@@ -92,7 +92,7 @@ void _start(void) { }
         obj, elf = temp / f"{core}.o", temp / f"{core}.elf"
         script = FW / f"Common/Ld/{core}/Link_{core.lower()}.ld"
         run("gcc", "-c", "-fno-pie", "-fno-asynchronous-unwind-tables",
-            "-DT384_DUALCORE=1", f"-DCore_{core}",
+            "-DT384_DUALCORE=1", "-DT384_RAW16_PROFILE=384u", f"-DCore_{core}",
             "-I" + str(FW / "Common/Raw16"), str(source), "-o", str(obj))
         run("ld", "-T", str(script), str(obj), "-o", str(elf))
         sections = run("readelf", "-SW", str(elf))
@@ -104,11 +104,11 @@ void _start(void) { }
         assert re.search(r"200c0300\s+\w\s+t384_dualcore_frame\b", symbols)
         if core == "V5F":
             assert re.search(r"00030000\s+\w\s+_start\b", symbols)
-            for name, addr, size in ((".t384_frame", 0x200C0300, 221184),
-                                     (".t384_frame1_itcm", 0x200A8000, 98304),
-                                     (".t384_frame1_dtcm", 0x200FB000, 18432),
-                                     (".t384_frame1_code", 0x20125800, 43008),
-                                     (".t384_frame1_data", 0x2016D000, 61440),
+            for name, addr, size in ((".t384_frame", 0x200C0300, 147456),
+                                     (".t384_frame1_itcm", 0x200A8000, 384),
+                                     (".t384_frame1_dtcm", 0x200FB000, 32),
+                                     (".t384_frame1_code", 0x20125800, 32),
+                                     (".t384_frame1_data", 0x2016D000, 32),
                                      (".t384_dma", 0x2017C000, 12288)):
                 match = re.search(r"\]\s+" + re.escape(name) +
                                   r"\s+(\w+)\s+([0-9a-f]+)\s+\w+\s+([0-9a-f]+)", sections)

@@ -1,6 +1,8 @@
 #ifndef T384_LWIPOPTS_H
 #define T384_LWIPOPTS_H
 
+#include "t384_raw16.h"
+
 /* ESP-IDF carries lwIP 2.2.0 with optional extensions. Keep them disabled. */
 #define ESP_LWIP 0
 #define ESP_LWIP_ARP 0
@@ -54,7 +56,13 @@
 
 #define TCP_MSS 1460
 #define TCP_WND (16 * TCP_MSS)
+#if T384_RAW16_PROFILE == 640u
+/* More outstanding COPY data for the larger native picture frames. The
+ * existing 96 KiB heap and 64-pbuf queue bound the allocation; no new RAM bank. */
+#define TCP_SND_BUF (32 * TCP_MSS)
+#else
 #define TCP_SND_BUF (16 * TCP_MSS)
+#endif
 #define TCP_SND_QUEUELEN 64
 #define TCP_LISTEN_BACKLOG 1
 #define TCP_QUEUE_OOSEQ 0

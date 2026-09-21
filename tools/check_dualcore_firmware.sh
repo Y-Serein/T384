@@ -12,7 +12,7 @@ includes=(
 )
 flags=(-std=gnu99 -DT384_DUALCORE=1 -DT384_HOST_SYNTAX_CHECK
        -Wall -Wextra -Werror -Wno-comment "${includes[@]}")
-for profile in 256u 384u; do
+for profile in 256u 384u 640u; do
   gcc "${flags[@]}" -DT384_RAW16_PROFILE="$profile" -DCore_V3F -fsyntax-only \
     firmware/V3F/User/main.c firmware/Common/App/http_status.c \
     firmware/Common/App/t384_time.c firmware/Common/Raw16/t384_dualcore.c \
@@ -24,6 +24,13 @@ for profile in 256u 384u; do
     firmware/Common/Raw16/t384_frame_pipeline_full.c \
     firmware/Common/Raw16/t384_frame_source_mini2.c \
     firmware/Common/Raw16/t384_module_files.c
+  if [[ "$profile" == 640u ]]; then
+    gcc "${flags[@]}" -DT384_RAW16_PROFILE=640u -DCore_V3F \
+      tests/mini2_640_sram_frame_smoke.c firmware/Common/Raw16/t384_frame_pipeline_full.c \
+      -o /tmp/t384_640_sram_frame_smoke
+    /tmp/t384_640_sram_frame_smoke
+    continue
+  fi
   gcc "${flags[@]}" -DT384_RAW16_PROFILE="$profile" -DCore_V5F \
     -ffunction-sections -fdata-sections \
     tests/mini2_dvp_capture_smoke.c \
@@ -35,7 +42,7 @@ for profile in 256u 384u; do
     -Wl,--gc-sections -o /tmp/t384_dualcore_capture_smoke
   /tmp/t384_dualcore_capture_smoke
 done
-gcc "${flags[@]}" -DCore_V5F -ffunction-sections -fdata-sections \
+gcc "${flags[@]}" -DT384_RAW16_PROFILE=384u -DCore_V5F -ffunction-sections -fdata-sections \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g \
   tests/mini2_dvp_capture_smoke.c \
   firmware/Common/Raw16/t384_frame_pipeline_full.c \

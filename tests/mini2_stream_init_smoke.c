@@ -20,6 +20,9 @@ static uint32_t now, reply_at, detector_ready_at, digital_ready_at;
 static uint8_t command[23], reply[96], detector, digital[3], mode;
 static size_t command_length, reply_length, reply_offset;
 static unsigned detector_sets, mode_sets, persist_sets, digital_queries;
+#if T384_RAW16_PROFILE == 640u
+static uint8_t native_yuv_format;
+#endif
 
 uint32_t t384_millis(void) { return now++; }
 
@@ -104,6 +107,13 @@ static void respond(void)
         static const uint8_t name[] = "WN2384";
         if (scenario == STALE_ACK) append_response(0u, NULL, 0u);
         append_response(0u, name, sizeof(name));
+#if T384_RAW16_PROFILE == 640u
+    } else if (index == 0x8Cu) {
+        assert(command[5] == 0x10u && command[6] == 0x03u);
+        assert(command[9] == 0u && command[17] == 1u);
+        if (scenario == STALE_ACK) append_response(0u, NULL, 0u);
+        append_response(0u, &native_yuv_format, 1u);
+#endif
     } else if (index == 0x84u) {
         append_response(0u, &detector, 1u);
     } else if (index == 0x86u) {
@@ -154,6 +164,56 @@ uint16_t USART_ReceiveData(USART_TypeDef *usart)
 
 int main(void)
 {
+#if T384_RAW16_PROFILE == 640u
+    static const uint8_t native_pixels[4][4] = {
+        {40u, 90u, 200u, 180u}, /* UYVY */
+        {200u, 90u, 40u, 180u}, /* VYUY */
+        {90u, 40u, 180u, 200u}, /* YUYV */
+        {90u, 200u, 180u, 40u}  /* YVYU */
+    };
+    static uint8_t input[T384_MINI2_DMA_BLOCK_BYTES] __attribute__((aligned(4)));
+    static uint8_t output[T384_MINI2_DMA_BLOCK_BYTES] __attribute__((aligned(4)));
+    for (unsigned test = 0u; test < 12u; ++test) {
+        now = reply_at = detector_ready_at = digital_ready_at = 0u;
+        command_length = reply_length = reply_offset = 0u;
+        detector_sets = mode_sets = persist_sets = digital_queries = 0u;
+        scenario = test == 4u ? SILENT : test == 5u ? CORRUPT_REPLY :
+                   test == 6u ? STALE_ACK : NORMAL;
+        memset((void *)&source_stats, 0, sizeof(source_stats));
+        source_stats.mini2_pn_valid = 1u;
+        source_stats.mini2_firmware_version_valid = 1u;
+        strcpy((char *)source_stats.mini2_pn, "TIFSC640");
+        strcpy((char *)source_stats.mini2_firmware_version, "01.00.01.03");
+        source_stats.mini2_query_stream_mode_valid = test != 8u;
+        source_stats.mini2_query_stream_mode_0x85 = test == 9u ? 1u : 0u;
+        if (test == 10u) strcpy((char *)source_stats.mini2_pn, "WN2384");
+        if (test == 11u) source_stats.mini2_firmware_version_valid = 0u;
+        native_yuv_format = test < 4u ? (uint8_t)test : test == 7u ? 4u : 2u;
+        mini2_configure_stream();
+        const bool ready = test < 4u || test == 6u;
+        assert((source_stats.stream_ready != 0u) == ready);
+        assert(detector_sets == 0u && mode_sets == 0u && persist_sets == 0u);
+        assert(digital_queries == 0u);
+        assert(source_stats.mini2_control_attempts == (test < 8u ? 1u : 0u));
+        assert(source_stats.mini2_control_tpd_set_status == T384_MINI2_CONTROL_SKIPPED);
+        if (ready) {
+            assert(source_stats.frame_mode == T384_FRAME_MODE_PICTURE);
+            assert(source_stats.pixel_format == T384_FRAME_PIXEL_FORMAT_UYVY);
+            for (size_t i = 0u; i < sizeof(input); i += 4u)
+                memcpy(input + i, native_pixels[native_yuv_format], 4u);
+            memset(output, 0u, sizeof(output));
+            mini2_copy_dma_block(output, input);
+            for (size_t i = 0u; i < sizeof(output); i += 4u) {
+                assert(memcmp(output + i, native_pixels[0], 4u) == 0);
+                assert(memcmp(input + i, native_pixels[native_yuv_format], 4u) == 0);
+            }
+        } else {
+            assert(source_stats.frame_mode == T384_FRAME_MODE_UNKNOWN);
+            assert(source_stats.pixel_format == 0u);
+        }
+    }
+    puts("640 native Picture: four YUV layouts, no setters, invalid replies closed");
+#else
     for (scenario = NORMAL; scenario < SCENARIO_COUNT; ++scenario) {
         now = reply_at = detector_ready_at = digital_ready_at = 0u;
         command_length = reply_length = reply_offset = 0u;
@@ -276,5 +336,6 @@ int main(void)
     }
 #endif
     puts("MINI2 native detector/output split, ACK recovery and fail-closed passed");
+#endif
     return 0;
 }

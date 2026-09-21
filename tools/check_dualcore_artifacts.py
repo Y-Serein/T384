@@ -77,7 +77,10 @@ def main():
     ipc_size, images = None, {}
     profile = re.search(r"#define\s+T384_RAW16_PROFILE\s+(\d+)u",
                         (FW / "Common/Raw16/t384_raw16.h").read_text())
-    frame_bytes = {384: 221184, 256: 98304}[int(profile[1])]
+    profile_id = int(profile[1])
+    frame_bytes = {640: 655360, 384: 221184, 256: 98304}[profile_id]
+    streaming = profile_id in (384, 640)
+    capture_bytes = {640: 220320, 384: 147456, 256: 98304}[profile_id]
     for core, path in maps.items():
         if path.stat().st_mtime_ns < latest.stat().st_mtime_ns:
             fail(f"stale {core} map; newer input {latest.relative_to(ROOT)}; rebuild both cores")
@@ -108,18 +111,20 @@ def main():
             if re.search(r"\.bss\.(?:slot_data|source_stats)\s+0x", text):
                 fail("V3F still owns capture payload/state")
         else:
-            if section(text, ".t384_frame") != (0x200C0300, frame_bytes):
+            if section(text, ".t384_frame") != (0x200C0300, capture_bytes):
                 fail("V5F full-frame payload placement/size mismatch")
-            dma_bytes = 12288 if frame_bytes == 221184 else 1024
+            dma_bytes = {640: 10240, 384: 12288, 256: 1024}[profile_id]
             if section(text, ".t384_dma") != (0x2017C000, dma_bytes):
                 fail("V5F shared DMA staging mismatch")
             if symbol(text, "_heap_end") != 0x200FB000:
                 fail("V5F heap overlaps secondary DTCM payload")
             margin = 0x200FB000 - symbol(text, "_ebss")
-            for name, addr, size in ((".t384_frame1_itcm", 0x200A8000, 98304),
-                                     (".t384_frame1_dtcm", 0x200FB000, 18432),
-                                     (".t384_frame1_code", 0x20125800, 43008),
-                                     (".t384_frame1_data", 0x2016D000, 61440)):
+            secondary_sizes = {640: (2048, 18144, 41472, 56960),
+                               384: (384, 32, 32, 32),
+                               256: (98304, 18432, 43008, 61440)}[profile_id]
+            for name, addr, size in zip(
+                    (".t384_frame1_itcm", ".t384_frame1_dtcm", ".t384_frame1_code", ".t384_frame1_data"),
+                    (0x200A8000, 0x200FB000, 0x20125800, 0x2016D000), secondary_sizes):
                 if section(text, name) != (addr, size):
                     fail(f"bad secondary frame region {name}")
             if margin < 8192:

@@ -45,8 +45,13 @@ typedef struct {
 } t384_raw16_roi_metrics_t;
 
 void t384_raw16_roi_reset(t384_raw16_roi_accumulator_t *accumulator);
-/* Accumulate both interpretations of each unchanged DVP byte pair. */
+/* Primary statistics describe normalized Y16BE values; le_* describes the
+ * opposite interpretation of the wire bytes, for byte-order diagnosis. */
 void t384_raw16_roi_add_be16_row(t384_raw16_roi_accumulator_t *accumulator,
+                                 uint32_t row_index,
+                                 const uint8_t *row,
+                                 size_t row_bytes);
+void t384_raw16_roi_add_le16_row(t384_raw16_roi_accumulator_t *accumulator,
                                  uint32_t row_index,
                                  const uint8_t *row,
                                  size_t row_bytes);

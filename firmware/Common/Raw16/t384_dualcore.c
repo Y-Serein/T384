@@ -10,7 +10,7 @@ t384_dualcore_shared_t t384_dualcore_shared
     __attribute__((section(".t384_ipc"), aligned(32)));
 
 #ifdef Core_V5F
-uint8_t t384_dualcore_frame[T384_RAW16_FRAME_BYTES]
+uint8_t t384_dualcore_frame[T384_CAPTURE_BUFFER_BYTES]
     __attribute__((section(".t384_frame"), aligned(32)));
 uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES]
     __attribute__((section(".t384_frame1_itcm"), aligned(32)));

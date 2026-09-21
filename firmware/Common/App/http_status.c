@@ -65,6 +65,8 @@ typedef struct {
     uint32_t frames;
     uint64_t bytes;
     uint32_t backpressure;
+    uint32_t sendbuf_stalls;
+    uint32_t write_mem_stalls;
     uint32_t write_errors;
     uint32_t timeout_disconnects;
     uint32_t fps_x1000;
@@ -79,10 +81,12 @@ static uint32_t raw16_rate_started_ms;
 static uint32_t raw16_rate_frames;
 static uint32_t raw16_rate_bytes;
 static uint32_t http_accept_rejects;
-static char diag_response[6080 + (T384_DUALCORE ? 256 : 0)];
+/* Keep the complete diagnostic body inside one bounded response. The WCH
+ * formatter must not hit its truncation boundary while expanding the many
+ * numeric counters below. */
+static char diag_response[8192 + (T384_DUALCORE ? 256 : 0)];
 /* The storage API caps payloads at 2 KiB; leave 256 B for HTTP headers. */
 static char calibration_response[T384_CAL_STORAGE_MAX_PAYLOAD + 256u];
-static uint8_t calibration_binary[T384_CAL_STORAGE_MAX_PAYLOAD];
 
 static const char status_response[] =
 #include "device_console_html.inc"
@@ -194,10 +198,30 @@ static size_t build_diag_response(void)
                      first_row_prefix_hex);
 
     const unsigned stream_active = raw16_client != NULL ? 1u : 0u;
+    struct tcp_pcb *stream_pcb = raw16_client != NULL ? raw16_client->pcb : NULL;
+    const unsigned long tcp_sndbuf_value = stream_pcb != NULL
+        ? (unsigned long)tcp_sndbuf(stream_pcb) : 0u;
+    const unsigned long tcp_snd_wnd_value = stream_pcb != NULL
+        ? (unsigned long)stream_pcb->snd_wnd : 0u;
+    const unsigned long tcp_cwnd_value = stream_pcb != NULL
+        ? (unsigned long)stream_pcb->cwnd : 0u;
+    const unsigned long tcp_snd_queuelen_value = stream_pcb != NULL
+        ? (unsigned long)stream_pcb->snd_queuelen : 0u;
+    const unsigned long tcp_unacked_value = stream_pcb != NULL &&
+        stream_pcb->unacked != NULL ? 1u : 0u;
     enum { DIAG_HEADER_RESERVE = 128 };
-    int body_length = snprintf(
-        diag_response + DIAG_HEADER_RESERVE,
-        sizeof(diag_response) - DIAG_HEADER_RESERVE,
+    int body_length = 0;
+#define APPEND_DIAG(...) do {                                                   \
+        const size_t used = (size_t)body_length;                                \
+        const size_t available = sizeof(diag_response) -                        \
+                                 DIAG_HEADER_RESERVE - used;                     \
+        const int appended = snprintf(diag_response + DIAG_HEADER_RESERVE +     \
+                                      used, available, __VA_ARGS__);             \
+        if (appended < 0 || (size_t)appended >= available) return 0u;            \
+        body_length += appended;                                                 \
+    } while (0)
+
+    APPEND_DIAG(
         "pipeline=raw16-source-pipeline-v1\n"
         "source.kind=%s\n"
         "source.synthetic=%lu\n"
@@ -246,6 +270,10 @@ static size_t build_diag_response(void)
         "mini2.query_stream_mode_valid=%lu\n"
         "mini2.query_stream_mode_status=%lu\n"
         "mini2.query_stream_mode_0x85=%lu\n"
+        "mini2.query_yuv_valid=%lu\n"
+        "mini2.query_yuv_status=%lu\n"
+        "mini2.query_yuv_format=%lu\n"
+        "source.picture_pack_rejected_blocks=%lu\n"
         "mini2.query_auto_ffc_valid=%lu\n"
         "mini2.query_auto_ffc_status=%lu\n"
         "mini2.query_auto_ffc_enabled=%lu\n"
@@ -265,7 +293,80 @@ static size_t build_diag_response(void)
         "mini2.pn_valid=%lu\n"
         "mini2.pn=%s\n"
         "mini2.sn_valid=%lu\n"
-        "mini2.sn=%s\n"
+        "mini2.sn=%s\n",
+        t384_frame_source_name(),
+        (unsigned long)source.synthetic,
+        (unsigned long)source.target_bps,
+        (unsigned long)source.frames,
+        (unsigned long)source.published_frames,
+        (unsigned long)source.dropped_frames,
+        (unsigned long)source.schedule_overruns,
+        (unsigned long)source.source_fps_x1000,
+        (unsigned long)source.stream_ready,
+        (unsigned long)source.frame_mode,
+        (unsigned long)source.pixel_format,
+        source_bytes,
+        (unsigned long)source.mini2_control_attempts,
+        (unsigned long)source.mini2_control_tx_bytes,
+        (unsigned long)source.mini2_control_ack_valid,
+        (unsigned long)source.mini2_control_ack_status,
+        (unsigned long)source.mini2_control_ack_timeout,
+        (unsigned long)source.mini2_control_ack_bad,
+        (unsigned long)source.mini2_control_digital_off_status,
+        (unsigned long)source.mini2_control_analog_off_status,
+        T384_MINI2_DETECTOR_FPS,
+        T384_MINI2_DVP_FPS,
+        T384_MINI2_CONTROL_SKIPPED,
+        T384_MINI2_DIGITAL_STATE_BYTES,
+        (unsigned long)source.mini2_control_detector30_status,
+        (unsigned long)source.mini2_control_dvp30_status,
+        (unsigned long)source.mini2_control_tpd_set_status,
+        (unsigned long)source.mini2_control_tpd_query_status,
+        (unsigned long)source.mini2_control_tpd_query_valid,
+        (unsigned long)source.mini2_control_tpd_query_mode,
+        (unsigned long)source.mini2_control_picture_fallback_used,
+        (unsigned long)source.mini2_control_picture_set_status,
+        (unsigned long)source.mini2_control_picture_dvp_status,
+        (unsigned long)source.mini2_control_picture_query_status,
+        (unsigned long)source.mini2_control_picture_query_valid,
+        (unsigned long)source.mini2_control_picture_query_mode,
+        (unsigned long)source.mini2_query_detector_valid,
+        (unsigned long)source.mini2_query_detector_status,
+        (unsigned long)source.mini2_query_detector_fps,
+        (unsigned long)source.mini2_query_digital_valid,
+        (unsigned long)source.mini2_query_digital_status,
+        (unsigned long)source.mini2_query_digital_enabled,
+        (unsigned long)source.mini2_query_digital_format,
+        (unsigned long)source.mini2_query_digital_fps,
+        (unsigned long)source.mini2_query_stream_mode_valid,
+        (unsigned long)source.mini2_query_stream_mode_status,
+        (unsigned long)source.mini2_query_stream_mode_0x85,
+        (unsigned long)source.mini2_query_yuv_valid,
+        (unsigned long)source.mini2_query_yuv_status,
+        (unsigned long)source.mini2_query_yuv_format,
+        (unsigned long)source.picture_pack_rejected_blocks,
+        (unsigned long)source.mini2_query_auto_ffc_valid,
+        (unsigned long)source.mini2_query_auto_ffc_status,
+        (unsigned long)source.mini2_query_auto_ffc_enabled,
+        (unsigned long)source.mini2_query_module_temp_valid,
+        (unsigned long)source.mini2_query_module_temp_status,
+        (unsigned long)source.mini2_query_module_temp_c_x100,
+        (unsigned long)source.mini2_query_vtemp_valid,
+        (unsigned long)source.mini2_query_vtemp_status,
+        (unsigned long)source.mini2_query_vtemp_raw,
+        (unsigned long)source.mini2_query_uptime_valid,
+        (unsigned long)source.mini2_query_uptime_status,
+        (unsigned long)source.mini2_query_uptime_seconds,
+        (unsigned long)source.mini2_device_name_valid,
+        source.mini2_device_name,
+        (unsigned long)source.mini2_firmware_version_valid,
+        source.mini2_firmware_version,
+        (unsigned long)source.mini2_pn_valid,
+        source.mini2_pn,
+        (unsigned long)source.mini2_sn_valid,
+        source.mini2_sn);
+
+    APPEND_DIAG(
         "dvp.timing_validated=%u\n"
         "dvp.config_pclk_falling=%u\n"
         "dvp.config_hsync_low=%u\n"
@@ -299,6 +400,7 @@ static size_t build_diag_response(void)
         "dvp.first_row_prefix_bytes=%lu\n"
         "dvp.first_row_prefix_hex=%s\n"
         "dvp.capture_active=%lu\n"
+        "dvp.y16_input=%s\n"
         "roi.encoding=Y16BE\n"
         "roi.start_x=%u\n"
         "roi.start_y=%u\n"
@@ -319,141 +421,7 @@ static size_t build_diag_response(void)
         "roi.le_mean_raw_x100=%lu\n"
         "roi.le_stddev_raw_x100=%lu\n"
         "roi.le_minimum_raw=%lu\n"
-        "roi.le_maximum_raw=%lu\n"
-        "pipeline.chunk_rows=%u\n"
-        "pipeline.chunk_bytes=%u\n"
-        "pipeline.slot_count=%u\n"
-        "pipeline.capacity_bytes=%u\n"
-        "pipeline.queued_chunks=%lu\n"
-        "pipeline.high_water_chunks=%lu\n"
-        "pipeline.frames_started=%lu\n"
-        "pipeline.frames_completed=%lu\n"
-        "pipeline.frames_aborted=%lu\n"
-        "pipeline.chunks_committed=%lu\n"
-        "pipeline.chunks_released=%lu\n"
-        "pipeline.bytes_committed=%s\n"
-        "pipeline.acquire_no_slot=%lu\n"
-        "pipeline.protocol_errors=%lu\n"
-        "pipeline.producer_active=%lu\n"
-        "pipeline.producer_leased=%lu\n"
-        "pipeline.consumer_leased=%lu\n"
-        "ncm.rx_callback=%lu\n"
-        "ncm.rx_busy_drop=%lu\n"
-        "ncm.rx_alloc_drop=%lu\n"
-        "ncm.rx_take_drop=%lu\n"
-        "ncm.tx_calls=%lu\n"
-        "ncm.tx_not_ready=%lu\n"
-        "ncm.tx_backpressure=%lu\n"
-        "ncm.tx_drop=%lu\n"
-        "ncm.tx_submit=%lu\n"
-        "dhcp.rx=%lu\n"
-        "dhcp.no_netif=%lu\n"
-        "dhcp.malformed=%lu\n"
-        "dhcp.discover=%lu\n"
-        "dhcp.offer_attempt=%lu\n"
-        "dhcp.offer_pbuf_fail=%lu\n"
-        "dhcp.offer_ok=%lu\n"
-        "dhcp.offer_err=%lu\n"
-        "dhcp.no_entry=%lu\n"
-        "dhcp.request=%lu\n"
-        "dhcp.request_no_ip=%lu\n"
-        "dhcp.request_unknown_ip=%lu\n"
-        "dhcp.request_busy=%lu\n"
-        "dhcp.ack_attempt=%lu\n"
-        "dhcp.ack_pbuf_fail=%lu\n"
-        "dhcp.ack_ok=%lu\n"
-        "dhcp.ack_err=%lu\n"
-        "http.active_clients=%u\n"
-        "http.accept_rejects=%lu\n"
-        "http.close_callback_isolation=1\n"
-        "http.static_window_refill=1\n"
-        "http.checksum_aligned_reads=1\n"
-        "camera.initialized=%lu\n"
-        "camera.sensor_pid=source-adapter\n"
-        "camera.published_frames=%lu\n"
-        "camera.bad_frames=%lu\n"
-        "camera.overflows=%lu\n"
-        "camera.timeouts=0\n"
-        "camera.dropped_no_slot=%lu\n"
-        "camera.last_frame_bytes=%lu\n"
-        "camera.source_fps_x1000=%lu\n"
-        "stream.active=%u\n"
-        "stream.connects=%lu\n"
-        "stream.disconnects=%lu\n"
-        "stream.frames=%lu\n"
-        "stream.bytes=%s\n"
-        "stream.backpressure=%lu\n"
-        "stream.write_errors=%lu\n"
-        "stream.timeout_disconnects=%lu\n"
-        "stream.fps_x1000=%lu\n"
-        "stream.payload_bps=%lu\n",
-        t384_frame_source_name(),
-        (unsigned long)source.synthetic,
-        (unsigned long)source.target_bps,
-        (unsigned long)source.frames,
-        (unsigned long)source.published_frames,
-        (unsigned long)source.dropped_frames,
-        (unsigned long)source.schedule_overruns,
-        (unsigned long)source.source_fps_x1000,
-        (unsigned long)source.stream_ready,
-        (unsigned long)source.frame_mode,
-        (unsigned long)source.pixel_format,
-        source_bytes,
-        (unsigned long)source.mini2_control_attempts,
-        (unsigned long)source.mini2_control_tx_bytes,
-        (unsigned long)source.mini2_control_ack_valid,
-        (unsigned long)source.mini2_control_ack_status,
-        (unsigned long)source.mini2_control_ack_timeout,
-        (unsigned long)source.mini2_control_ack_bad,
-        (unsigned long)source.mini2_control_digital_off_status,
-        (unsigned long)source.mini2_control_analog_off_status,
-        T384_MINI2_DETECTOR_FPS,
-        T384_MINI2_DVP_FPS,
-        T384_MINI2_CONTROL_SKIPPED,
-        T384_MINI2_DIGITAL_RESPONSE_BYTES,
-        (unsigned long)source.mini2_control_detector30_status,
-        (unsigned long)source.mini2_control_dvp30_status,
-        (unsigned long)source.mini2_control_tpd_set_status,
-        (unsigned long)source.mini2_control_tpd_query_status,
-        (unsigned long)source.mini2_control_tpd_query_valid,
-        (unsigned long)source.mini2_control_tpd_query_mode,
-        (unsigned long)source.mini2_control_picture_fallback_used,
-        (unsigned long)source.mini2_control_picture_set_status,
-        (unsigned long)source.mini2_control_picture_dvp_status,
-        (unsigned long)source.mini2_control_picture_query_status,
-        (unsigned long)source.mini2_control_picture_query_valid,
-        (unsigned long)source.mini2_control_picture_query_mode,
-        (unsigned long)source.mini2_query_detector_valid,
-        (unsigned long)source.mini2_query_detector_status,
-        (unsigned long)source.mini2_query_detector_fps,
-        (unsigned long)source.mini2_query_digital_valid,
-        (unsigned long)source.mini2_query_digital_status,
-        (unsigned long)source.mini2_query_digital_enabled,
-        (unsigned long)source.mini2_query_digital_format,
-        (unsigned long)source.mini2_query_digital_fps,
-        (unsigned long)source.mini2_query_stream_mode_valid,
-        (unsigned long)source.mini2_query_stream_mode_status,
-        (unsigned long)source.mini2_query_stream_mode_0x85,
-        (unsigned long)source.mini2_query_auto_ffc_valid,
-        (unsigned long)source.mini2_query_auto_ffc_status,
-        (unsigned long)source.mini2_query_auto_ffc_enabled,
-        (unsigned long)source.mini2_query_module_temp_valid,
-        (unsigned long)source.mini2_query_module_temp_status,
-        (unsigned long)source.mini2_query_module_temp_c_x100,
-        (unsigned long)source.mini2_query_vtemp_valid,
-        (unsigned long)source.mini2_query_vtemp_status,
-        (unsigned long)source.mini2_query_vtemp_raw,
-        (unsigned long)source.mini2_query_uptime_valid,
-        (unsigned long)source.mini2_query_uptime_status,
-        (unsigned long)source.mini2_query_uptime_seconds,
-        (unsigned long)source.mini2_device_name_valid,
-        source.mini2_device_name,
-        (unsigned long)source.mini2_firmware_version_valid,
-        source.mini2_firmware_version,
-        (unsigned long)source.mini2_pn_valid,
-        source.mini2_pn,
-        (unsigned long)source.mini2_sn_valid,
-        source.mini2_sn,
+        "roi.le_maximum_raw=%lu\n",
         T384_MINI2_DVP_TIMING_VALIDATED,
         T384_MINI2_DVP_PCLK_FALLING,
         T384_MINI2_DVP_HSYNC_LOW,
@@ -487,6 +455,17 @@ static size_t build_diag_response(void)
         (unsigned long)first_row_prefix_bytes,
         first_row_prefix_hex,
         (unsigned long)source.capture_active,
+        source.frame_mode == T384_FRAME_MODE_TPD_Y16
+            ? (T384_MINI2_DVP_Y16_LITTLE_ENDIAN ? "LE" : "BE")
+            : source.frame_mode == T384_FRAME_MODE_PICTURE
+                ? (source.mini2_query_yuv_valid != 0u
+                    ? (source.mini2_query_yuv_format == 0u ? "UYVY"
+                       : source.mini2_query_yuv_format == 1u ? "VYUY"
+                       : source.mini2_query_yuv_format == 2u ? "YUYV"
+                       : source.mini2_query_yuv_format == 3u ? "YVYU"
+                       : "unknown")
+                    : "UYVY")
+                : "unknown",
         (T384_RAW16_WIDTH - T384_RAW16_ROI_WIDTH) / 2u,
         (T384_RAW16_HEIGHT - T384_RAW16_ROI_HEIGHT) / 2u,
         T384_RAW16_ROI_WIDTH,
@@ -506,11 +485,64 @@ static size_t build_diag_response(void)
         (unsigned long)roi_metrics.le_mean_raw_x100,
         (unsigned long)roi_metrics.le_stddev_raw_x100,
         (unsigned long)roi_snapshot.le_minimum,
-        (unsigned long)roi_snapshot.le_maximum,
+        (unsigned long)roi_snapshot.le_maximum);
+
+    APPEND_DIAG(
+        "pipeline.chunk_rows=%u\n"
+        "pipeline.chunk_bytes=%u\n"
+        "pipeline.slot_count=%u\n"
+        "pipeline.capacity_bytes=%u\n"
+        "pipeline.storage_capacity_bytes=%u\n"
+        "pipeline.streaming=%u\n"
+        "pipeline.queued_chunks=%lu\n"
+        "pipeline.high_water_chunks=%lu\n"
+        "pipeline.frames_started=%lu\n"
+        "pipeline.frames_completed=%lu\n"
+        "pipeline.frames_aborted=%lu\n"
+        "pipeline.chunks_committed=%lu\n"
+        "pipeline.chunks_released=%lu\n"
+        "pipeline.bytes_committed=%s\n"
+        "pipeline.acquire_no_slot=%lu\n"
+        "pipeline.protocol_errors=%lu\n"
+        "pipeline.producer_active=%lu\n"
+        "pipeline.producer_leased=%lu\n"
+        "pipeline.consumer_leased=%lu\n"
+        "ncm.rx_callback=%lu\n"
+        "ncm.rx_busy_drop=%lu\n"
+        "ncm.rx_alloc_drop=%lu\n"
+        "ncm.rx_take_drop=%lu\n"
+        "ncm.tx_calls=%lu\n"
+        "ncm.tx_not_ready=%lu\n"
+        "ncm.tx_backpressure=%lu\n"
+        "ncm.tx_drop=%lu\n"
+        "ncm.tx_submit=%lu\n"
+        "ncm.xmit_max_ntb_size=%lu\n"
+        "ncm.xmit_max_datagrams=%lu\n"
+        "ncm.xmit_free_ntb=%lu\n"
+        "ncm.xmit_ready_ntb=%lu\n"
+        "ncm.xmit_glue_active=%lu\n"
+        "ncm.xmit_tinyusb_active=%lu\n"
+        "ncm.xmit_glue_datagrams=%lu\n"
+        "ncm.xmit_ntb_submit=%lu\n"
+        "ncm.xmit_ntb_complete=%lu\n"
+        "ncm.xmit_ntb_errors=%lu\n"
+        "ncm.xmit_ntb_bytes=%lu\n"
+        "ncm.xmit_ntb_datagrams=%lu\n"
+        "ncm.xmit_ntb_1=%lu\n"
+        "ncm.xmit_ntb_2_4=%lu\n"
+        "ncm.xmit_ntb_5_8=%lu\n"
+        "ncm.xmit_ntb_9_plus=%lu\n"
+        "usb.recovery_guard=1\n"
+        "ncm.mounts=%lu\n"
+        "ncm.umounts=%lu\n"
+        "ncm.suspends=%lu\n"
+        "ncm.resumes=%lu\n",
         T384_PIPELINE_CHUNK_ROWS,
         T384_PIPELINE_CHUNK_BYTES,
         T384_PIPELINE_SLOT_COUNT,
         T384_PIPELINE_CHUNK_BYTES * T384_PIPELINE_SLOT_COUNT,
+        T384_PIPELINE_STORAGE_CHUNK_BYTES * T384_PIPELINE_SLOT_COUNT,
+        (unsigned)T384_PIPELINE_STREAMING,
         (unsigned long)pipeline.queued_chunks,
         (unsigned long)pipeline.high_water_chunks,
         (unsigned long)pipeline.frames_started,
@@ -533,6 +565,77 @@ static size_t build_diag_response(void)
         (unsigned long)ncm.tx_backpressure,
         (unsigned long)ncm.tx_drop,
         (unsigned long)ncm.tx_submit,
+        (unsigned long)ncm.xmit_max_ntb_size,
+        (unsigned long)ncm.xmit_max_datagrams,
+        (unsigned long)ncm.xmit_free_ntb,
+        (unsigned long)ncm.xmit_ready_ntb,
+        (unsigned long)ncm.xmit_glue_active,
+        (unsigned long)ncm.xmit_tinyusb_active,
+        (unsigned long)ncm.xmit_glue_datagrams,
+        (unsigned long)ncm.xmit_ntb_submit,
+        (unsigned long)ncm.xmit_ntb_complete,
+        (unsigned long)ncm.xmit_ntb_errors,
+        (unsigned long)ncm.xmit_ntb_bytes,
+        (unsigned long)ncm.xmit_ntb_datagrams,
+        (unsigned long)ncm.xmit_ntb_1,
+        (unsigned long)ncm.xmit_ntb_2_4,
+        (unsigned long)ncm.xmit_ntb_5_8,
+        (unsigned long)ncm.xmit_ntb_9_plus,
+        (unsigned long)ncm.mounts,
+        (unsigned long)ncm.umounts,
+        (unsigned long)ncm.suspends,
+        (unsigned long)ncm.resumes);
+
+    APPEND_DIAG(
+        "dhcp.rx=%lu\n"
+        "dhcp.no_netif=%lu\n"
+        "dhcp.malformed=%lu\n"
+        "dhcp.discover=%lu\n"
+        "dhcp.offer_attempt=%lu\n"
+        "dhcp.offer_pbuf_fail=%lu\n"
+        "dhcp.offer_ok=%lu\n"
+        "dhcp.offer_err=%lu\n"
+        "dhcp.no_entry=%lu\n"
+        "dhcp.request=%lu\n"
+        "dhcp.request_no_ip=%lu\n"
+        "dhcp.request_unknown_ip=%lu\n"
+        "dhcp.request_busy=%lu\n"
+        "dhcp.ack_attempt=%lu\n"
+        "dhcp.ack_pbuf_fail=%lu\n"
+        "dhcp.ack_ok=%lu\n"
+        "dhcp.ack_err=%lu\n"
+        "http.active_clients=%u\n"
+        "http.accept_rejects=%lu\n"
+        "http.close_callback_isolation=1\n"
+        "http.static_window_refill=1\n"
+        "http.checksum_aligned_reads=1\n"
+        "http.tcp_send_buffer_bytes=%u\n"
+        "tcp.sndbuf=%lu\n"
+        "tcp.snd_wnd=%lu\n"
+        "tcp.cwnd=%lu\n"
+        "tcp.snd_queuelen=%lu\n"
+        "tcp.unacked_present=%lu\n"
+        "camera.initialized=%lu\n"
+        "camera.sensor_pid=source-adapter\n"
+        "camera.published_frames=%lu\n"
+        "camera.bad_frames=%lu\n"
+        "camera.overflows=%lu\n"
+        "camera.timeouts=0\n"
+        "camera.dropped_no_slot=%lu\n"
+        "camera.last_frame_bytes=%lu\n"
+        "camera.source_fps_x1000=%lu\n"
+        "stream.active=%u\n"
+        "stream.connects=%lu\n"
+        "stream.disconnects=%lu\n"
+        "stream.frames=%lu\n"
+        "stream.bytes=%s\n"
+        "stream.backpressure=%lu\n"
+        "stream.sendbuf_stalls=%lu\n"
+        "stream.write_mem_stalls=%lu\n"
+        "stream.write_errors=%lu\n"
+        "stream.timeout_disconnects=%lu\n"
+        "stream.fps_x1000=%lu\n"
+        "stream.payload_bps=%lu\n",
         (unsigned long)dhcp.rx,
         (unsigned long)dhcp.no_netif,
         (unsigned long)dhcp.malformed,
@@ -552,6 +655,12 @@ static size_t build_diag_response(void)
         (unsigned long)dhcp.ack_err,
         active_client_count(),
         (unsigned long)http_accept_rejects,
+        (unsigned)TCP_SND_BUF,
+        tcp_sndbuf_value,
+        tcp_snd_wnd_value,
+        tcp_cwnd_value,
+        tcp_snd_queuelen_value,
+        tcp_unacked_value,
         (unsigned long)source.initialized,
         (unsigned long)source.published_frames,
         (unsigned long)source.dvp_bad_frames,
@@ -565,36 +674,36 @@ static size_t build_diag_response(void)
         (unsigned long)raw16_stats.frames,
         raw16_bytes,
         (unsigned long)raw16_stats.backpressure,
+        (unsigned long)raw16_stats.sendbuf_stalls,
+        (unsigned long)raw16_stats.write_mem_stalls,
         (unsigned long)raw16_stats.write_errors,
         (unsigned long)raw16_stats.timeout_disconnects,
         (unsigned long)raw16_stats.fps_x1000,
         (unsigned long)raw16_stats.payload_bps);
 
-    if (body_length < 0 ||
-        (size_t)body_length >= sizeof(diag_response) - DIAG_HEADER_RESERVE) {
-        return 0u;
-    }
-
 #if T384_DUALCORE
     const t384_dualcore_shared_t *shared = &t384_dualcore_shared;
-    const int extra = snprintf(
-        diag_response + DIAG_HEADER_RESERVE + body_length,
-        sizeof(diag_response) - DIAG_HEADER_RESERVE - (size_t)body_length,
+    APPEND_DIAG(
         "dualcore.v5f_booted=%lu\n"
         "dualcore.v5f_initialized=%lu\n"
         "dualcore.dtcm_access=%lu\n"
-        "dualcore.frame_banks=2\n"
+        "dualcore.frame_banks=%u\n"
         "dualcore.frame_state=%lu\n"
         "dualcore.frame_state1=%lu\n",
         (unsigned long)__atomic_load_n(&shared->v5f_booted, __ATOMIC_ACQUIRE),
         (unsigned long)__atomic_load_n(&shared->v5f_initialized, __ATOMIC_ACQUIRE),
         (unsigned long)__atomic_load_n(&shared->v3f_frame_access_ok, __ATOMIC_ACQUIRE),
+#if T384_PIPELINE_STREAMING
+        0u,
+        (unsigned long)__atomic_load_n(&shared->ring.active, __ATOMIC_ACQUIRE),
+        (unsigned long)__atomic_load_n(&shared->read_leased, __ATOMIC_ACQUIRE));
+#else
+        T384_FRAME_BANKS,
         (unsigned long)__atomic_load_n(&shared->banks[0].state, __ATOMIC_ACQUIRE),
         (unsigned long)__atomic_load_n(&shared->banks[1].state, __ATOMIC_ACQUIRE));
-    if (extra < 0 || (size_t)extra >= sizeof(diag_response) -
-        DIAG_HEADER_RESERVE - (size_t)body_length) return 0u;
-    body_length += extra;
 #endif
+#endif
+#undef APPEND_DIAG
     char header[DIAG_HEADER_RESERVE];
     const int header_length = snprintf(
         header, sizeof(header),
@@ -778,6 +887,14 @@ static bool lease_next_raw16_chunk(http_client_t *client)
             continue;
         }
         client->raw16_synced = true;
+#if T384_PIPELINE_PACKED_PICTURE
+        /* The ring already holds a lossless 32-byte UV prefix and 2560 Y
+         * bytes per slot. The consumer lease lasts through tcp_write(COPY). */
+        chunk.frame_offset = (chunk.frame_offset / T384_PIPELINE_CHUNK_BYTES) *
+                             T384_PIPELINE_STORAGE_CHUNK_BYTES;
+        chunk.length = T384_PIPELINE_STORAGE_CHUNK_BYTES;
+        chunk.flags |= T384_CHUNK_FLAG_PICTURE_PACKED;
+#endif
         client->raw16_chunk = chunk;
         client->raw16_chunk_leased = true;
         client->raw16_wire_header_offset = 0u;
@@ -797,6 +914,7 @@ static err_t queue_raw16_data(http_client_t *client)
         if (send_space == 0u) {
             if (!client->raw16_blocked) {
                 ++raw16_stats.backpressure;
+                ++raw16_stats.sendbuf_stalls;
                 client->raw16_blocked = true;
             }
             break;
@@ -848,6 +966,7 @@ static err_t queue_raw16_data(http_client_t *client)
         if (write_error == ERR_MEM) {
             if (!client->raw16_blocked) {
                 ++raw16_stats.backpressure;
+                ++raw16_stats.write_mem_stalls;
                 client->raw16_blocked = true;
             }
             break;
@@ -942,6 +1061,50 @@ static err_t http_poll(void *arg, struct tcp_pcb *pcb)
     return ERR_OK;
 }
 
+typedef struct {
+    const char *model;
+    unsigned long zero_c_x100;
+    unsigned long counts_per_c_x100;
+} t384_temp_model_config_t;
+
+/* Expose only a complete, sane experimental model for this profile. OEM
+ * readiness remains independent of this engineering display mapping. */
+static void get_temp_model_config(t384_temp_model_config_t *cfg)
+{
+    t384_cal_manifest_t manifest;
+    if (cfg == NULL) return;
+    char profile[T384_CAL_STORAGE_PROFILE_MAX];
+    snprintf(profile, sizeof(profile), "%ux%u", T384_RAW16_WIDTH, T384_RAW16_HEIGHT);
+    cfg->model = T384_EXPERIMENTAL_TEMP_MODEL;
+    cfg->zero_c_x100 = (unsigned long)T384_EXPERIMENTAL_Y16_ZERO_C_X100;
+    cfg->counts_per_c_x100 = (unsigned long)T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100;
+#if T384_RAW16_PROFILE == 640u
+    /* Image-only bring-up: never inherit a saved model from the 384 test. */
+    return;
+#endif
+    if (t384_cal_storage_manifest(&manifest) == T384_CAL_OK &&
+        strcmp(manifest.profile, profile) == 0 &&
+        manifest.payload_len == sizeof(t384_cal_empirical_2point_t)) {
+        uint8_t buf[sizeof(t384_cal_empirical_2point_t)];
+        if (t384_cal_storage_read_data(0u, buf, sizeof(buf)) == T384_CAL_OK) {
+            t384_cal_empirical_2point_t model;
+            memcpy(&model, buf, sizeof(model));
+            if (model.hot_c <= model.zero_c || model.hot_raw <= model.zero_raw ||
+                model.hot_raw > 65535u || model.counts_per_c_x1000 <= 0)
+                return;
+            const uint32_t counts = (uint32_t)(((int64_t)model.counts_per_c_x1000 + 5) / 10);
+            const int64_t zero = (int64_t)model.zero_raw * 100 -
+                                 (int64_t)model.zero_c * counts;
+            if (counts == 0u || zero < 0 || zero > 6553500) return;
+            /* manifest is a stack local; never return its model pointer. */
+            cfg->model = T384_CAL_MODEL_EMPIRICAL_2POINT;
+            cfg->zero_c_x100 = (unsigned long)zero;
+            cfg->counts_per_c_x100 = (unsigned long)counts;
+            return;
+        }
+    }
+}
+
 static err_t send_raw16_stream(http_client_t *client)
 {
     if (t384_module_files_busy()) {
@@ -959,13 +1122,15 @@ static err_t send_raw16_stream(http_client_t *client)
     const uint16_t pixel_format = t384_frame_source_pixel_format();
     const bool y16 = pixel_format == T384_FRAME_PIXEL_FORMAT_Y16_BE;
     const char *frame_mode = y16 ? "tpd" : "picture-fallback";
+    t384_temp_model_config_t temp_cfg;
+    get_temp_model_config(&temp_cfg);
     const int header_length = snprintf(
         client->header, sizeof(client->header),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: application/x-t384-frame-chunks\r\n"
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
-        "X-T384-Format: T384-FRAME-CHUNK-V1\r\n"
+        "X-T384-Format: T384-FRAME-CHUNK-V%u\r\n"
         "X-T384-Frame-Mode: %s\r\n"
         "X-T384-Pixel-Format: %s\r\n"
         "X-T384-Pixel-Format-Code: %u\r\n"
@@ -977,13 +1142,19 @@ static err_t send_raw16_stream(http_client_t *client)
         "X-T384-Frame-Width: %u\r\n"
         "X-T384-Frame-Height: %u\r\n"
         "X-T384-Frame-Bytes: %lu\r\n\r\n",
-        frame_mode, t384_frame_pixel_format_name(pixel_format), pixel_format,
-        y16 ? T384_EXPERIMENTAL_TEMP_MODEL : "unavailable",
-        (unsigned long)T384_EXPERIMENTAL_Y16_ZERO_C_X100,
-        (unsigned long)T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100,
+        T384_RAW16_WIRE_VERSION, frame_mode,
+        t384_frame_pixel_format_name(T384_PIPELINE_PACKED_PICTURE
+            ? T384_FRAME_PIXEL_FORMAT_PACKED_UYVY : pixel_format),
+        T384_PIPELINE_PACKED_PICTURE
+            ? T384_FRAME_PIXEL_FORMAT_PACKED_UYVY : pixel_format,
+        y16 ? temp_cfg.model : "unavailable",
+        temp_cfg.zero_c_x100,
+        temp_cfg.counts_per_c_x100,
         T384_RAW16_WIRE_VERSION, T384_RAW16_WIRE_HEADER_BYTES,
-        T384_PIPELINE_CHUNK_BYTES, T384_RAW16_WIDTH, T384_RAW16_HEIGHT,
-        (unsigned long)T384_RAW16_FRAME_BYTES);
+        T384_PIPELINE_STORAGE_CHUNK_BYTES, T384_RAW16_WIDTH, T384_RAW16_HEIGHT,
+        (unsigned long)(T384_PIPELINE_PACKED_PICTURE
+            ? T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES
+            : T384_RAW16_FRAME_BYTES));
     if (header_length <= 0 ||
         (size_t)header_length >= sizeof(client->header)) {
         return send_and_close(client, not_found_response,
@@ -1050,20 +1221,28 @@ static err_t send_binary_status(http_client_t *client, int code, const char *rea
                           (size_t)n + length);
 }
 
-static int storage_put_packet(const uint8_t *data, size_t len)
+static t384_cal_status_t storage_put_packet(const uint8_t *data, size_t len)
 {
-    if (!data || len < sizeof(t384_cal_manifest_t)) return -1;
+    if (!data || len < sizeof(t384_cal_manifest_t)) return T384_CAL_FORMAT;
     t384_cal_manifest_t manifest;
     memcpy(&manifest, data, sizeof(manifest));
-    if (t384_cal_storage_begin(&manifest) != T384_CAL_OK) return -1;
+    if ((size_t)manifest.payload_len != len-sizeof(manifest)) return T384_CAL_FORMAT;
+    if (t384_cal_crc32(data+sizeof(manifest),len-sizeof(manifest)) != manifest.payload_crc32)
+        return T384_CAL_CRC;
+    char profile[T384_CAL_STORAGE_PROFILE_MAX];
+    snprintf(profile,sizeof(profile),"%ux%u",T384_RAW16_WIDTH,T384_RAW16_HEIGHT);
+    if (!memchr(manifest.profile,0,sizeof(manifest.profile)) ||
+        strcmp(manifest.profile,profile)!=0) return T384_CAL_FORMAT;
+    const t384_cal_status_t begun=t384_cal_storage_begin(&manifest);
+    if (begun != T384_CAL_OK) return begun;
     const uint32_t payload_len = manifest.payload_len;
     if ((size_t)payload_len != len - sizeof(manifest)
         || t384_cal_storage_write(0u, data + sizeof(manifest), payload_len)
                != T384_CAL_OK) {
         t384_cal_storage_abort();
-        return -1;
+        return T384_CAL_FORMAT;
     }
-    return 0;
+    return T384_CAL_OK;
 }
 
 static err_t handle_calibration_request(http_client_t *client)
@@ -1076,19 +1255,46 @@ static err_t handle_calibration_request(http_client_t *client)
     const char *body = request + header_len;
     size_t body_len = n >= header_len ? n - header_len : 0u;
     size_t content_length = 0u;
-    const char *cl = strstr(request, "Content-Length:");
-    if (cl != NULL && cl < end) {
-        cl += 15;
-        while (*cl == ' ' || *cl == '\t') ++cl;
-        while (*cl >= '0' && *cl <= '9') {
-            if (content_length > 4096u) return send_json_status(client, 413, "Payload Too Large", "{\"error\":\"body_too_large\"}");
-            content_length = content_length * 10u + (size_t)(*cl - '0');
-            ++cl;
+    bool has_content_length=false;
+    const char *line=strstr(request,"\r\n");
+    if (!line) return send_json_status(client,400,"Bad Request","{\"error\":\"headers\"}");
+    for (line+=2; line<end; ) {
+        const char *next=strstr(line,"\r\n");
+        const char *colon=memchr(line,':',(size_t)(next-line));
+        if (!colon || line[0]==' ' || line[0]=='\t')
+            return send_json_status(client,400,"Bad Request","{\"error\":\"headers\"}");
+        const size_t name_length=(size_t)(colon-line);
+        char name[18];
+        if (name_length<sizeof(name)) {
+            for (size_t i=0;i<name_length;++i)
+                name[i]=(line[i]>='A' && line[i]<='Z')?(char)(line[i]+('a'-'A')):line[i];
+            name[name_length]=0;
+            if (strcmp(name,"transfer-encoding")==0)
+                return send_json_status(client,400,"Bad Request","{\"error\":\"transfer_encoding\"}");
+            if (strcmp(name,"content-length")==0) {
+                if (has_content_length)
+                    return send_json_status(client,400,"Bad Request","{\"error\":\"duplicate_length\"}");
+                has_content_length=true;
+                const char *value=colon+1;
+                while (value<next && (*value==' ' || *value=='\t')) ++value;
+                if (value==next || *value<'0' || *value>'9')
+                    return send_json_status(client,400,"Bad Request","{\"error\":\"content_length\"}");
+                while (value<next && *value>='0' && *value<='9') {
+                    const size_t digit=(size_t)(*value-'0');
+                    if (content_length>(3072u-digit)/10u)
+                        return send_json_status(client,413,"Payload Too Large","{\"error\":\"body_too_large\"}");
+                    content_length=content_length*10u+digit; ++value;
+                }
+                while (value<next && (*value==' ' || *value=='\t')) ++value;
+                if (value!=next)
+                    return send_json_status(client,400,"Bad Request","{\"error\":\"content_length\"}");
+            }
         }
+        line=next+2;
     }
-    if (content_length > 3072u) return send_json_status(client, 413, "Payload Too Large", "{\"error\":\"body_too_large\"}");
-    if (body_len < content_length) return ERR_OK;
-    body_len = content_length;
+    if (body_len<content_length) return ERR_OK;
+    if (body_len!=content_length)
+        return send_json_status(client,400,"Bad Request","{\"error\":\"body_length\"}");
     const bool is_device = strncmp(request, "GET /api/v1/device ", sizeof("GET /api/v1/device ") - 1u) == 0;
     const bool is_manifest = strncmp(request, "GET /api/v1/calibration/v1/manifest ", sizeof("GET /api/v1/calibration/v1/manifest ") - 1u) == 0;
     const bool is_data = strncmp(request, "GET /api/v1/calibration/v1/data ", sizeof("GET /api/v1/calibration/v1/data ") - 1u) == 0;
@@ -1107,38 +1313,57 @@ static err_t handle_calibration_request(http_client_t *client)
         t384_cal_manifest_t manifest;
         const t384_cal_status_t status = t384_cal_storage_manifest(&manifest);
         if (status != T384_CAL_OK) return send_json_status(client, 404, "Not Found", "{\"error\":\"unavailable\"}");
+        char identity[2u*T384_CAL_STORAGE_ID_MAX+1u];
+        static const char hex[]="0123456789abcdef";
+        for (size_t i=0;i<T384_CAL_STORAGE_ID_MAX;++i) {
+            identity[2u*i]=hex[manifest.identity[i]>>4];
+            identity[2u*i+1u]=hex[manifest.identity[i]&15u];
+        }
+        identity[sizeof(identity)-1u]=0;
         const int n = snprintf((char *)client->request, sizeof(client->request),
-                               "{\"schema\":%lu,\"generation\":%lu,\"payload_len\":%lu,\"payload_crc32\":%lu,\"calibration_id\":%lu,\"model\":\"%s\",\"profile\":\"%s\",\"gain\":%u}",
+                               "{\"schema\":%lu,\"generation\":%lu,\"payload_len\":%lu,\"payload_crc32\":%lu,\"calibration_id\":%lu,\"model\":\"%s\",\"profile\":\"%s\",\"gain\":%u,\"identity\":\"%s\",\"header_crc32\":%lu,\"applied\":false,\"oem_radiometry_ready\":false,\"application_blocker\":\"runtime_adapter_unverified\"}",
                                (unsigned long)manifest.schema, (unsigned long)manifest.generation,
                                (unsigned long)manifest.payload_len, (unsigned long)manifest.payload_crc32,
                                (unsigned long)manifest.calibration_id, manifest.model, manifest.profile,
-                               (unsigned)manifest.gain);
+                               (unsigned)manifest.gain, identity, (unsigned long)manifest.header_crc32);
         if (n <= 0 || (size_t)n >= sizeof(client->request)) return send_json_status(client, 500, "Internal Server Error", "{\"error\":\"encode\"}");
         return send_json_status(client, 200, "OK", (const char *)client->request);
     }
     if (is_data) {
         t384_cal_manifest_t manifest;
         if (t384_cal_storage_manifest(&manifest) != T384_CAL_OK
-            || manifest.payload_len > sizeof(calibration_binary)) {
+            || manifest.payload_len > T384_CAL_STORAGE_MAX_PAYLOAD) {
             return send_json_status(client, 404, "Not Found", "{\"error\":\"unavailable\"}");
         }
-        if (t384_cal_storage_read_data(0u, calibration_binary, manifest.payload_len)
+        if (t384_cal_storage_read_data(0u, client->request, manifest.payload_len)
             != T384_CAL_OK) return send_json_status(client, 500, "Internal Server Error", "{\"error\":\"read\"}");
-        return send_binary_status(client, 200, "OK", calibration_binary, manifest.payload_len);
+        return send_binary_status(client, 200, "OK", client->request, manifest.payload_len);
     }
-    int rc = -1;
+    const bool is_put=strncmp(request,"PUT /api/v1/calibration/v1/data ",
+                              sizeof("PUT /api/v1/calibration/v1/data ")-1u)==0;
+    const bool is_commit=strncmp(request,"POST /api/v1/calibration/v1/commit ",
+                                 sizeof("POST /api/v1/calibration/v1/commit ")-1u)==0;
+    if ((is_put || is_commit) && (raw16_client!=NULL || t384_module_files_busy()))
+        return send_json_status(client,409,"Conflict","{\"error\":\"stop_stream_and_module_read\"}");
     if (strncmp(request, "PUT /api/v1/calibration/v1/data ", sizeof("PUT /api/v1/calibration/v1/data ") - 1u) == 0) {
-        if (cl == NULL) return send_json_status(client, 411, "Length Required", "{\"error\":\"content_length_required\"}");
+        if (!has_content_length) return send_json_status(client, 411, "Length Required", "{\"error\":\"content_length_required\"}");
         if (body_len > 3072u) return send_json_status(client, 413, "Payload Too Large", "{\"error\":\"body_too_large\"}");
-        rc = storage_put_packet((const uint8_t *)body, body_len);
-        return send_json_status(client, rc == 0 ? 200 : 422, rc == 0 ? "OK" : "Unprocessable Entity", rc == 0 ? "{\"staged\":true}" : "{\"error\":\"rejected\"}");
-    } else if (strncmp(request, "POST /api/v1/calibration/v1/commit ", 35u) == 0) {
+        const t384_cal_status_t status=storage_put_packet((const uint8_t *)body,body_len);
+        char result[96];
+        snprintf(result,sizeof(result),"{\"staged\":%s,\"status\":\"%s\"}",
+                 status==T384_CAL_OK?"true":"false",t384_cal_status_name(status));
+        return send_json_status(client,status==T384_CAL_OK?200:status==T384_CAL_BUSY?409:422,
+                                status==T384_CAL_OK?"OK":"Error",result);
+    } else if (strncmp(request, "POST /api/v1/calibration/v1/commit ", sizeof("POST /api/v1/calibration/v1/commit ")-1u) == 0) {
         if (body_len != 0u) return send_json_status(client, 400, "Bad Request", "{\"error\":\"body_not_allowed\"}");
-        rc = t384_cal_storage_finish() == T384_CAL_OK ? 0 : -1;
-        return send_json_status(client, rc == 0 ? 200 : 409,
-                                rc == 0 ? "OK" : "Conflict",
-                                rc == 0 ? "{\"committed\":true}" : "{\"error\":\"commit_failed\"}");
-    } else if (strncmp(request, "POST /api/v1/calibration/v1/abort ", 34u) == 0) {
+        const t384_cal_status_t status=t384_cal_storage_finish();
+        char result[160];
+        snprintf(result,sizeof(result),
+                 "{\"committed\":%s,\"status\":\"%s\",\"applied\":false,\"oem_radiometry_ready\":false}",
+                 status==T384_CAL_OK?"true":"false",t384_cal_status_name(status));
+        return send_json_status(client,status==T384_CAL_OK?200:status==T384_CAL_FLASH?500:409,
+                                status==T384_CAL_OK?"OK":"Error",result);
+    } else if (strncmp(request, "POST /api/v1/calibration/v1/abort ", sizeof("POST /api/v1/calibration/v1/abort ")-1u) == 0) {
         if (body_len != 0u) return send_json_status(client, 400, "Bad Request", "{\"error\":\"body_not_allowed\"}");
         t384_cal_storage_abort();
         return send_json_status(client, 200, "OK", "{\"aborted\":true}");
@@ -1201,9 +1426,20 @@ static err_t handle_module_request(http_client_t *client)
         client->module_download_started = t384_millis();
         return send_static_response(client, (const char *)begin, (size_t)n + s->length);
     }
-    char body[768], fw[23];
+    char body[768], fw[23], tx_hex[47], rx_hex[65];
+    static const char hex[] = "0123456789abcdef";
     for (unsigned i = 0; i < sizeof(s->fw); ++i)
         snprintf(fw+i*2u, 3u, "%02x", s->fw[i]);
+    for (unsigned i = 0u; i < s->tx_diag_len; ++i) {
+        tx_hex[i*2u] = hex[s->tx_diag[i] >> 4];
+        tx_hex[i*2u+1u] = hex[s->tx_diag[i] & 0x0fu];
+    }
+    tx_hex[s->tx_diag_len*2u] = 0;
+    for (unsigned i = 0u; i < s->rx_diag_len; ++i) {
+        rx_hex[i*2u] = hex[s->rx_diag[i] >> 4];
+        rx_hex[i*2u+1u] = hex[s->rx_diag[i] & 0x0fu];
+    }
+    rx_hex[s->rx_diag_len*2u] = 0;
     const char *const states[] = {"idle", "reading", "ready", "done", "error", "aborted"};
     const int n = snprintf(body, sizeof(body),
         "{\"state\":\"%s\",\"transaction\":%lu,\"id\":\"%s\",\"path\":\"%s\","
@@ -1211,14 +1447,16 @@ static err_t handle_module_request(http_client_t *client)
         "\"error\":%d,\"uart_status\":%u,\"open_status\":%u,\"close_status\":%u,"
         "\"command\":%u,\"error_command\":%u,\"error_uart_status\":%u,"
         "\"dvp_paused\":%s,\"downloading\":%s,\"cleanup_failed\":%s,"
-        "\"pn\":\"%s\",\"sn\":\"%s\",\"fw_hex\":\"%s\",\"identity_verified\":%s}",
+        "\"pn\":\"%s\",\"sn\":\"%s\",\"fw_hex\":\"%s\",\"identity_verified\":%s,"
+        "\"tx_hex\":\"%s\",\"rx_hex\":\"%s\"}",
         states[s->state], (unsigned long)s->transaction, s->id, s->path,
         (unsigned long)s->length, (unsigned long)s->received, (unsigned long)s->crc32,
         s->error, s->uart_status, s->open_status, s->close_status, s->command,
         s->error_command, s->error_uart_status,
         s->held ? "true" : "false", s->downloading ? "true" : "false",
         s->cleanup_failed ? "true" : "false", s->pn, s->sn, fw,
-        s->state == T384_MF_READY || s->state == T384_MF_DONE ? "true" : "false");
+        s->state == T384_MF_READY || s->state == T384_MF_DONE ? "true" : "false",
+        tx_hex, rx_hex);
     if (n <= 0 || (size_t)n >= sizeof(body))
         return module_reply(client, 500, "{\"error\":\"status_capacity\"}");
     return module_reply(client, request.action == T384_MF_HTTP_READ ? 202 : 200, body);

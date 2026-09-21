@@ -1,6 +1,7 @@
 #include "t384_raw16.h"
 
-#if T384_RAW16_FRAME_BYTES != 98304u && T384_RAW16_FRAME_BYTES != 221184u
+#if T384_RAW16_FRAME_BYTES != 98304u && T384_RAW16_FRAME_BYTES != 221184u && \
+    T384_RAW16_FRAME_BYTES != 655360u
 #error "unsupported T384 RAW16 frame size"
 #endif
 

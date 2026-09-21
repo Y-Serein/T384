@@ -40,7 +40,8 @@ uint16_t t384_frame_pixel_format_from_flags(uint16_t flags)
         return T384_FRAME_PIXEL_FORMAT_Y16_BE;
     }
     if (mode == T384_CHUNK_FLAG_PICTURE_UYVY) {
-        return T384_FRAME_PIXEL_FORMAT_UYVY;
+        return (flags & T384_CHUNK_FLAG_PICTURE_PACKED) != 0u
+            ? T384_FRAME_PIXEL_FORMAT_PACKED_UYVY : T384_FRAME_PIXEL_FORMAT_UYVY;
     }
     return 0u;
 }
@@ -50,7 +51,9 @@ const char *t384_frame_pixel_format_name(uint16_t pixel_format)
     if (pixel_format == T384_FRAME_PIXEL_FORMAT_Y16_BE) {
         return "Y16BE";
     }
-    return pixel_format == T384_FRAME_PIXEL_FORMAT_UYVY ? "UYVY" : "UNKNOWN";
+    if (pixel_format == T384_FRAME_PIXEL_FORMAT_UYVY) return "UYVY";
+    return pixel_format == T384_FRAME_PIXEL_FORMAT_PACKED_UYVY
+        ? "PACKED-UYVY" : "UNKNOWN";
 }
 
 void t384_raw16_wire_encode(uint8_t output[T384_RAW16_WIRE_HEADER_BYTES],
@@ -64,7 +67,9 @@ void t384_raw16_wire_encode(uint8_t output[T384_RAW16_WIRE_HEADER_BYTES],
     put_le16(output + 6u, T384_RAW16_WIRE_HEADER_BYTES);
     put_le32(output + 8u, chunk->frame_sequence);
     put_le32(output + 12u, chunk->frame_offset);
-    put_le32(output + 16u, T384_RAW16_FRAME_BYTES);
+    put_le32(output + 16u, T384_PIPELINE_PACKED_PICTURE
+        ? T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES
+        : T384_RAW16_FRAME_BYTES);
     put_le32(output + 20u, chunk->capture_ms);
     put_le16(output + 24u, chunk->length);
     put_le16(output + 26u, T384_RAW16_WIDTH);

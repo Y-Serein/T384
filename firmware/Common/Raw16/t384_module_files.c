@@ -9,13 +9,14 @@
 /* Protocol evidence: docs/reference/MINI2_READONLY_FILE_PROTOCOL.md.
  * No file data writes, close-all, CRC modification or calibration commands. */
 enum { BEFORE_PN, BEFORE_SN, BEFORE_FW, OPEN, INFO, READ, CLOSE,
-       AFTER_PN, AFTER_SN, AFTER_FW, DRAIN };
+       AFTER_PN, AFTER_SN, AFTER_FW, DRAIN, PARAMETERS,
+       STATE_GAIN, STATE_VTEMP, STATE_FFC, STATE_SHUTTER, STATE_GAIN_AFTER };
 enum { BAD_ID = -1, BUSY = -2, UNAVAILABLE = -3, TIMEOUT = -4,
        BAD_FRAME = -5, MODULE_ERROR = -6, BAD_LENGTH = -7,
        IDENTITY = -8, NO_SUFFIX = -9, UART_ERROR = -10, CANCELLED = -11 };
 static const char *const ids[] = {
     "kt-high", "kt-low", "bt-high", "bt-low", "nuct-high", "nuct-low",
-    "distance-high", "distance-low"
+    "distance-high", "distance-low", "tpd-high", "tpd-low", "cal-state"
 };
 static t384_module_file_status_t status;
 static uint8_t *scratch;
@@ -27,6 +28,9 @@ static uint32_t started, command_started, ready_at, quiet_at, drain_started;
 static bool pending, may_be_open;
 static uint8_t identity_raw[3][32];
 static uint16_t identity_length[3];
+
+static bool query_phase(void)
+{ return phase==PARAMETERS || (phase>=STATE_GAIN && phase<=STATE_GAIN_AFTER); }
 
 static uint32_t crc_update(uint32_t crc, const uint8_t *data, size_t length)
 {
@@ -47,6 +51,15 @@ static void release(void)
     pending = false;
 }
 
+static void capture_diag(void)
+{
+    unsigned n;
+    status.tx_diag_len = (uint8_t)(tx_length > 23u ? 23u : tx_length);
+    for (n = 0u; n < status.tx_diag_len; ++n) status.tx_diag[n] = tx[n];
+    status.rx_diag_len = (uint8_t)(rx_length > 32u ? 32u : rx_length);
+    for (n = 0u; n < status.rx_diag_len; ++n) status.rx_diag[n] = rx[n];
+}
+
 static void failed_done(void)
 {
     status.state = status.error == CANCELLED ? T384_MF_ABORTED : T384_MF_ERROR;
@@ -61,6 +74,14 @@ static void fail(int error, uint32_t now)
         status.error_uart_status = status.uart_status;
     }
     pending = false;
+    capture_diag();
+    /* Parameter reads never open a file. After an uncertain query response,
+     * don't issue CLOSE or let a delayed response contaminate a new query. */
+    if (query_phase() && tx_offset != 0u && error != MODULE_ERROR) {
+        status.cleanup_failed = true;
+        failed_done();
+        return;
+    }
     if (phase == CLOSE || (phase == OPEN && may_be_open && tx_offset < tx_length)) {
         status.cleanup_failed = true;
         failed_done();
@@ -123,6 +144,18 @@ static void issue(uint32_t now)
         const uint8_t commands[] = {6u, 7u, 2u};
         expected_data = index == 2u ? 11u : 32u;
         t384_mini2_build_info_query_command(tx, commands[index], (uint8_t)expected_data);
+    } else if (phase == PARAMETERS) {
+        expected_data = 6u;
+        if (!t384_mini2_build_tpd_parameters_query_command(
+                tx, (selected & 1u) ? 0u : 1u)) {
+            fail(BAD_ID, now); return;
+        }
+    } else if (phase>=STATE_GAIN && phase<=STATE_GAIN_AFTER) {
+        const uint8_t field=phase==STATE_GAIN_AFTER?0u:(uint8_t)(phase-STATE_GAIN);
+        expected_data=field==1u?2u:1u;
+        if (!t384_mini2_build_calibration_state_query_command(tx,field)) {
+            fail(BAD_ID,now); return;
+        }
     } else if (phase == OPEN) {
         if (!make_path()) { fail(NO_SUFFIX, now); return; }
         if (!t384_mini2_build_file_open(tx, file_id, status.path)) {
@@ -168,7 +201,33 @@ static void response(uint32_t now)
         fail(MODULE_ERROR, now);
         return;
     }
-    if (result != 0u) { fail(MODULE_ERROR, now); return; }
+    if (result != 0u && phase >= STATE_GAIN && phase <= STATE_GAIN_AFTER) {
+        /* A CRC-valid frame with a non-zero status means the field could not
+         * be read (e.g. WN2384's basic_gain_get). Record it as unknown and
+         * continue the boundary query instead of failing/locking the whole
+         * transaction, so the capture flow is not blocked. */
+        uint8_t *snapshot = scratch + T384_MODULE_FILE_HEADER_RESERVE;
+        if (phase == STATE_GAIN_AFTER) {
+            if (snapshot[0] != 0xFFu) {
+                phase = AFTER_PN;
+                fail(IDENTITY, now);
+                return;
+            }
+            status.length = status.received = 8u;
+            status.crc32 = crc_update(status.crc32, snapshot, 8u);
+            phase = AFTER_PN;
+        } else {
+            const size_t offset = (size_t)(phase - STATE_GAIN) * 2u;
+            snapshot[offset] = 0xFFu;
+            snapshot[offset + 1u] = 0xFFu;
+            ++phase;
+        }
+        return;
+    }
+    if (result != 0u) {
+        fail(query_phase() && length != 0u ? BAD_LENGTH : MODULE_ERROR, now);
+        return;
+    }
     if (length != expected_data) { fail(BAD_LENGTH, now); return; }
     if (status.error != 0 && phase != CLOSE) { fail(status.error, now); return; }
     if (phase <= BEFORE_FW) {
@@ -181,7 +240,26 @@ static void response(uint32_t now)
             fail(IDENTITY, now); return;
         }
         if (phase == BEFORE_FW) memcpy(status.fw, data, 11u);
-        ++phase;
+        if (phase==BEFORE_FW && selected==10u) phase=STATE_GAIN;
+        else phase = phase == BEFORE_FW && selected >= 8u ? PARAMETERS : phase + 1u;
+    } else if (phase == PARAMETERS) {
+        status.length = status.received = length;
+        memcpy(scratch + T384_MODULE_FILE_HEADER_RESERVE, data, length);
+        status.crc32 = crc_update(status.crc32, data, length);
+        /* open_status/close_status stay 255: no file handle was involved. */
+        phase = AFTER_PN;
+    } else if (phase>=STATE_GAIN && phase<=STATE_GAIN_AFTER) {
+        uint8_t *snapshot=scratch+T384_MODULE_FILE_HEADER_RESERVE;
+        if (phase==STATE_GAIN_AFTER) {
+            if (data[0]!=snapshot[0]) { phase=AFTER_PN; fail(IDENTITY,now); return; }
+            status.length=status.received=8u;
+            status.crc32=crc_update(status.crc32,snapshot,8u);
+            phase=AFTER_PN;
+        } else {
+            const size_t offset=(size_t)(phase-STATE_GAIN)*2u;
+            snapshot[offset]=data[0]; snapshot[offset+1u]=length==2u?data[1]:0u;
+            ++phase;
+        }
     } else if (phase == OPEN) {
         phase = INFO;
     } else if (phase == INFO) {
@@ -304,6 +382,8 @@ void t384_module_files_abort(uint32_t now)
          * bytes could be consumed as the remaining file-name payload. */
         if (pending && tx_offset < tx_length) {
             status.error = CANCELLED;
+            status.error_command = status.command;
+            status.error_uart_status = status.uart_status;
         } else fail(CANCELLED, now);
     }
 }

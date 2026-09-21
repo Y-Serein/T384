@@ -2,6 +2,13 @@
 set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 result_dir="$(mktemp -d /tmp/t384-module-files.XXXXXX)"
+gcc -std=gnu99 -Wall -Wextra -Werror -DCore_V3F \
+  -I"$project_root/tests/fixtures/calibration_flash" \
+  -I"$project_root/firmware/Common/Raw16" \
+  "$project_root/tests/calibration_flash_smoke.c" \
+  "$project_root/firmware/Common/Raw16/t384_calibration_storage.c" \
+  -o "$result_dir/calibration-flash-smoke"
+"$result_dir/calibration-flash-smoke"
 gcc -std=gnu99 -Wall -Wextra -Werror -DT384_HOST_SYNTAX_CHECK \
   -I"$project_root/firmware/Common/Raw16" -I"$project_root/firmware/Common/App" \
   "$project_root/tests/module_files_smoke.c" \
@@ -12,7 +19,7 @@ gcc -std=gnu99 -Wall -Wextra -Werror -DT384_HOST_SYNTAX_CHECK \
   "$project_root/firmware/Common/Raw16/t384_raw16_wire.c" \
   "$project_root/firmware/Common/Raw16/t384_raw16.c" \
   -o "$result_dir/smoke"
-for scenario in {0..15}; do "$result_dir/smoke" "$scenario"; done
+for scenario in {0..31}; do "$result_dir/smoke" "$scenario"; done
 gcc -shared -fPIC -std=gnu99 -Wall -Wextra -Werror \
   "$project_root/firmware/Common/Raw16/t384_mini2_protocol.c" \
   -o "$result_dir/protocol.so"
@@ -56,5 +63,7 @@ gcc -std=gnu99 -Wall -Wextra -Werror -Wno-comment -DT384_HOST_SYNTAX_CHECK -DCor
   -Wl,--gc-sections -o "$result_dir/calibration-http-smoke"
 "$result_dir/calibration-http-smoke"
 python3 "$project_root/tests/module_files_host_smoke.py"
+python3 "$project_root/tests/calibration_storage_host_smoke.py"
+python3 "$project_root/tests/calibration_capture_smoke.py"
 python3 "$project_root/tools/read_mini2_module_files.py" --help >/dev/null
 echo "MINI2 read-only file host checks passed; no hardware was accessed"

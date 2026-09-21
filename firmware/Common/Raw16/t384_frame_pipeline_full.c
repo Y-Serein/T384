@@ -5,6 +5,182 @@
 #include "t384_compiler.h"
 #define S t384_dualcore_shared
 
+#if T384_PIPELINE_STREAMING
+typedef struct {
+    uint32_t frame_sequence, frame_offset, capture_ms;
+    uint16_t length, flags;
+} ring_slot_t;
+typedef char ring_metadata_size_check[sizeof(ring_slot_t) == 16u ? 1 : -1];
+#define R S.ring
+
+static uint32_t next_slot(uint32_t slot)
+{
+    return slot + 1u == T384_PIPELINE_SLOT_COUNT ? 0u : slot + 1u;
+}
+static uint32_t queued_chunks(void)
+{
+    const uint32_t committed = __atomic_load_n(&R.committed, __ATOMIC_ACQUIRE);
+    const uint32_t released = __atomic_load_n(&R.released, __ATOMIC_ACQUIRE);
+    const uint32_t count = committed - released;
+    return count > T384_PIPELINE_SLOT_COUNT ? T384_PIPELINE_SLOT_COUNT : count;
+}
+static void stats_begin(void) { ++S.producer_sequence; T384_MEMORY_BARRIER(); }
+static void stats_end(void) { T384_MEMORY_BARRIER(); ++S.producer_sequence; }
+void t384_frame_pipeline_init(void) { t384_dualcore_init(); }
+bool t384_frame_pipeline_empty(void)
+{
+    return queued_chunks() == 0u && !R.active && !R.write_leased &&
+           !__atomic_load_n(&S.read_leased, __ATOMIC_ACQUIRE) && !R.scratch_leased;
+}
+void t384_frame_pipeline_abort_frame(void)
+{
+    if (!R.active) return;
+    stats_begin();
+    ++S.pipeline.frames_aborted;
+    R.active = R.write_leased = R.frame_offset = 0u;
+    stats_end();
+    /* Already published slots remain immutable until consumer release.
+     * No FRAME_END is emitted: browser discards this prefix at next START. */
+}
+static bool protocol_error(void)
+{
+    stats_begin(); ++S.pipeline.protocol_errors; stats_end();
+    t384_frame_pipeline_abort_frame();
+    return false;
+}
+bool t384_frame_pipeline_begin_frame(uint32_t sequence, uint32_t ms, uint16_t flags)
+{
+    const uint16_t mode = flags & T384_CHUNK_FLAG_DATA_MODE_MASK;
+    if (R.active || R.write_leased ||
+        (mode != T384_CHUNK_FLAG_TPD_Y16 && mode != T384_CHUNK_FLAG_PICTURE_UYVY))
+        return protocol_error();
+#if T384_PIPELINE_PACKED_PICTURE
+    if (mode != T384_CHUNK_FLAG_PICTURE_UYVY) return protocol_error();
+#endif
+    if (R.scratch_leased) return false;
+    /* Admit at an empty boundary. Starting every frame behind an old prefix
+     * can repeatedly overflow mid-frame and starve complete-frame delivery. */
+    if (queued_chunks() || __atomic_load_n(&S.read_leased, __ATOMIC_ACQUIRE)) {
+        stats_begin(); ++S.pipeline.acquire_no_slot; stats_end();
+        return false;
+    }
+    stats_begin();
+    R.active = 1u;
+    R.frame_sequence = sequence; R.capture_ms = ms; R.source_flags = flags;
+    R.frame_offset = 0u;
+    ++S.pipeline.frames_started;
+    stats_end();
+    return true;
+}
+bool t384_frame_pipeline_acquire_write(uint8_t **data, uint16_t *capacity)
+{
+    if (!data || !capacity || !R.active || R.write_leased)
+        return protocol_error();
+    if (queued_chunks() == T384_PIPELINE_SLOT_COUNT) {
+        stats_begin(); ++S.pipeline.acquire_no_slot; stats_end();
+        return false;
+    }
+    stats_begin();
+    R.write_slot = R.producer_next; R.write_leased = 1u;
+    stats_end();
+#if T384_PIPELINE_PACKED_PICTURE
+    *data = t384_picture_slot_data(R.write_slot);
+#else
+    *data = t384_dualcore_frame + R.write_slot * T384_PIPELINE_CHUNK_BYTES;
+#endif
+    *capacity = T384_PIPELINE_STORAGE_CHUNK_BYTES;
+    return true;
+}
+bool t384_frame_pipeline_commit_write(uint16_t length, bool end)
+{
+    if (!R.active || !R.write_leased || length != T384_PIPELINE_CHUNK_BYTES ||
+        R.frame_offset + length > T384_RAW16_FRAME_BYTES ||
+        end != (R.frame_offset + length == T384_RAW16_FRAME_BYTES))
+        return protocol_error();
+    ring_slot_t slot = {R.frame_sequence, R.frame_offset, R.capture_ms,
+                       length, (uint16_t)R.source_flags};
+
+    if (R.frame_offset == 0u) slot.flags |= T384_CHUNK_FLAG_FRAME_START;
+    if (end) slot.flags |= T384_CHUNK_FLAG_FRAME_END;
+    memcpy(t384_frame1_itcm + R.write_slot * sizeof(slot), &slot, sizeof(slot));
+
+    stats_begin();
+    R.frame_offset += length; R.write_leased = 0u;
+    ++S.pipeline.chunks_committed; S.pipeline.bytes_committed += length;
+    R.producer_next = next_slot(R.producer_next);
+    const uint32_t committed = __atomic_load_n(&R.committed, __ATOMIC_RELAXED);
+    __atomic_store_n(&R.committed, committed + 1u, __ATOMIC_RELEASE);
+    const uint32_t count = queued_chunks();
+    if (count > S.pipeline.high_water_chunks) S.pipeline.high_water_chunks = count;
+    if (end) { R.active = 0u; R.frame_offset = 0u; ++S.pipeline.frames_completed; }
+    stats_end();
+    return true;
+}
+bool t384_frame_pipeline_peek(t384_frame_chunk_view_t *view)
+{
+    if (!view || R.scratch_leased) return false;
+    uint32_t expected = 0u;
+    if (!__atomic_compare_exchange_n(&S.read_leased, &expected, 1u, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return false;
+    if (!queued_chunks() || R.scratch_leased) {
+        __atomic_store_n(&S.read_leased, 0u, __ATOMIC_RELEASE);
+        return false;
+    }
+    R.read_slot = R.consumer_next;
+    ring_slot_t slot;
+    memcpy(&slot, t384_frame1_itcm + R.read_slot * sizeof(slot), sizeof(slot));
+#if T384_PIPELINE_PACKED_PICTURE
+    if (slot.length != T384_PIPELINE_CHUNK_BYTES ||
+        (slot.flags & T384_CHUNK_FLAG_DATA_MODE_MASK) != T384_CHUNK_FLAG_PICTURE_UYVY) {
+        __atomic_store_n(&S.read_leased, 0u, __ATOMIC_RELEASE);
+        return false;
+    }
+    view->data = t384_picture_slot_data(R.read_slot);
+#else
+    view->data = t384_dualcore_frame + R.read_slot * T384_PIPELINE_CHUNK_BYTES;
+#endif
+    view->frame_sequence = slot.frame_sequence; view->frame_offset = slot.frame_offset;
+    view->capture_ms = slot.capture_ms; view->length = slot.length; view->flags = slot.flags;
+    return true;
+}
+void t384_frame_pipeline_release(void)
+{
+    if (!__atomic_load_n(&S.read_leased, __ATOMIC_ACQUIRE)) return;
+    R.consumer_next = next_slot(R.consumer_next);
+    ++S.pipeline.chunks_released;
+    const uint32_t released = __atomic_load_n(&R.released, __ATOMIC_RELAXED);
+    __atomic_store_n(&R.released, released + 1u, __ATOMIC_RELEASE);
+    __atomic_store_n(&S.read_leased, 0u, __ATOMIC_RELEASE);
+}
+bool t384_frame_pipeline_scratch_acquire(uint8_t **data, size_t *capacity)
+{
+    if (!data || !capacity || !t384_frame_pipeline_empty()) return false;
+    uint32_t expected = 0u;
+    if (!__atomic_compare_exchange_n(&S.read_leased, &expected, 1u, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return false;
+    R.scratch_leased = 1u;
+    *data = t384_dualcore_frame; *capacity = T384_CAPTURE_BUFFER_BYTES;
+    __atomic_store_n(&S.read_leased, 0u, __ATOMIC_RELEASE);
+    return true;
+}
+void t384_frame_pipeline_scratch_release(void) { R.scratch_leased = 0u; }
+void t384_frame_pipeline_get_stats(t384_frame_pipeline_stats_t *out)
+{
+    static t384_frame_pipeline_stats_t last;
+    if (!out) return;
+    for (unsigned attempt = 0u; attempt < 16u; ++attempt) {
+        const uint32_t before = __atomic_load_n(&S.producer_sequence, __ATOMIC_ACQUIRE);
+        if (before & 1u) continue;
+        t384_frame_pipeline_stats_t copy = S.pipeline;
+        T384_MEMORY_BARRIER();
+        if (before == __atomic_load_n(&S.producer_sequence, __ATOMIC_ACQUIRE)) { last = copy; break; }
+    }
+    *out = last;
+    out->queued_chunks = queued_chunks(); out->producer_active = R.active;
+    out->producer_leased = R.write_leased; out->consumer_leased = S.read_leased;
+}
+#else
+
 static void stats_begin(void) { ++S.producer_sequence; T384_MEMORY_BARRIER(); }
 static void stats_end(void) { T384_MEMORY_BARRIER(); ++S.producer_sequence; }
 
@@ -211,4 +387,5 @@ void t384_frame_pipeline_get_stats(t384_frame_pipeline_stats_t *out)
     out->consumer_leased = S.read_leased;
     out->queued_chunks = queued_chunks();
 }
+#endif /* streaming / complete-frame banks */
 #endif

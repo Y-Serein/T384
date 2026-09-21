@@ -102,6 +102,15 @@ typedef struct {
   xmit_ntb_t *xmit_glue_ntb;                            // buffer for the running transfer glue logic -> driver
   uint16_t xmit_sequence;                               // NTB sequence counter
   uint16_t xmit_glue_ntb_datagram_ndx;                  // index into \a xmit_glue_ntb_datagram
+  uint32_t xmit_ntb_submit;
+  uint32_t xmit_ntb_complete;
+  uint32_t xmit_ntb_errors;
+  uint32_t xmit_ntb_bytes;
+  uint32_t xmit_ntb_datagrams;
+  uint32_t xmit_ntb_1;
+  uint32_t xmit_ntb_2_4;
+  uint32_t xmit_ntb_5_8;
+  uint32_t xmit_ntb_9_plus;
 
   // notification handling
   enum {
@@ -387,8 +396,22 @@ static void xmit_start_if_possible(uint8_t rhport) {
     TU_LOG_DRV(">> %d %d\n", ncm_interface.xmit_tinyusb_ntb->nth.wBlockLength, ncm_interface.xmit_glue_ntb_datagram_ndx);
   }
 
-  // Kick off an endpoint transfer
-  usbd_edpt_xfer(0, ncm_interface.ep_in, ncm_interface.xmit_tinyusb_ntb->data, ncm_interface.xmit_tinyusb_ntb->nth.wBlockLength);
+  // Count actual endpoint submissions, not Ethernet datagrams accepted by lwIP.
+  xmit_ntb_t *ntb = ncm_interface.xmit_tinyusb_ntb;
+  uint16_t datagrams = 0;
+  while (datagrams < ncm_interface.xmit_max_datagrams &&
+         ntb->ndp_datagram[datagrams].wDatagramLength != 0) ++datagrams;
+  if (usbd_edpt_xfer(0, ncm_interface.ep_in, ntb->data, ntb->nth.wBlockLength)) {
+    ++ncm_interface.xmit_ntb_submit;
+    ncm_interface.xmit_ntb_bytes += ntb->nth.wBlockLength;
+    ncm_interface.xmit_ntb_datagrams += datagrams;
+    if (datagrams == 1) ++ncm_interface.xmit_ntb_1;
+    else if (datagrams <= 4) ++ncm_interface.xmit_ntb_2_4;
+    else if (datagrams <= 8) ++ncm_interface.xmit_ntb_5_8;
+    else ++ncm_interface.xmit_ntb_9_plus;
+  } else {
+    ++ncm_interface.xmit_ntb_errors;
+  }
 } // xmit_start_if_possible
 
 /**
@@ -733,6 +756,31 @@ void tud_network_xmit_flush(void) {
   xmit_start_if_possible(ncm_interface.rhport);
 }
 
+void tud_network_ncm_diag_get(tud_network_ncm_diag_t *out) {
+  if (out == NULL) return;
+
+  memset(out, 0, sizeof(*out));
+  out->xmit_max_ntb_size = ncm_interface.xmit_max_ntb_size;
+  out->xmit_max_datagrams = ncm_interface.xmit_max_datagrams;
+  out->xmit_glue_active = ncm_interface.xmit_glue_ntb != NULL;
+  out->xmit_tinyusb_active = ncm_interface.xmit_tinyusb_ntb != NULL;
+  out->xmit_glue_datagrams = ncm_interface.xmit_glue_ntb_datagram_ndx;
+  out->xmit_ntb_submit = ncm_interface.xmit_ntb_submit;
+  out->xmit_ntb_complete = ncm_interface.xmit_ntb_complete;
+  out->xmit_ntb_errors = ncm_interface.xmit_ntb_errors;
+  out->xmit_ntb_bytes = ncm_interface.xmit_ntb_bytes;
+  out->xmit_ntb_datagrams = ncm_interface.xmit_ntb_datagrams;
+  out->xmit_ntb_1 = ncm_interface.xmit_ntb_1;
+  out->xmit_ntb_2_4 = ncm_interface.xmit_ntb_2_4;
+  out->xmit_ntb_5_8 = ncm_interface.xmit_ntb_5_8;
+  out->xmit_ntb_9_plus = ncm_interface.xmit_ntb_9_plus;
+
+  for (int i = 0; i < XMIT_NTB_N; ++i) {
+    if (ncm_interface.xmit_free_ntb[i] != NULL) ++out->xmit_free_ntb;
+    if (ncm_interface.xmit_ready_ntb[i] != NULL) ++out->xmit_ready_ntb;
+  }
+}
+
 /**
  * Keep the receive logic busy and transfer pending packets to the glue logic.
  * Avoid recursive calls due to wrong expectations of the net glue logic,
@@ -871,7 +919,6 @@ uint16_t netd_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc, uint16
  * Handle TinyUSB requests to process transfer events.
  */
 bool netd_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
-  (void) result;
 
   if (ep_addr == ncm_interface.ep_out) {
     // new NTB received
@@ -892,6 +939,12 @@ bool netd_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_
     // - free the transmitted NTB buffer
     // - insert ZLPs when necessary
     // - if there is another transmit NTB waiting, try to start transmission
+    if (result == XFER_RESULT_SUCCESS && ncm_interface.xmit_tinyusb_ntb != NULL &&
+        xferred_bytes == ncm_interface.xmit_tinyusb_ntb->nth.wBlockLength) {
+      ++ncm_interface.xmit_ntb_complete;
+    } else {
+      ++ncm_interface.xmit_ntb_errors;
+    }
     xmit_put_ntb_into_free_list(ncm_interface.xmit_tinyusb_ntb);
     ncm_interface.xmit_tinyusb_ntb = NULL;
     if (!xmit_insert_required_zlp(rhport, xferred_bytes)) {

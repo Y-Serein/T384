@@ -1,9 +1,9 @@
 # T384 RAW16 正式双核工程
 
-用户已确认B方案，当前唯一目标为设备持续输出完整帧。首版链路：
+用户已确认B方案，当前384目标为60完整FPS。2026-09-18改为8行分块流水线：
 
 ```text
-MINI2 -> V5F DVP/DMA共享暂存块 -> DTCM完整帧
+MINI2 -> V5F DVP/DMA共享暂存块 -> DTCM 24槽块队列
       -> V3F现有分块协议/TCP COPY -> USB NCM -> 浏览器完整帧
 ```
 
@@ -13,18 +13,47 @@ V5F使用仓库已有WCH V5F startup和自己的向量、ITCM代码、DTCM数据
 V3F持续服务USB/HTTP，不进入Petros示例的STOP/WFE等待；共享状态加内存屏障
 完成握手和帧所有权交接，不依赖HSEM通知才能消费。
 
-当前双帧链路保持每帧独立的 `FREE -> FILLING -> READY -> READING -> FREE`。
-只有完整行数、字节数和物理帧结束均通过才发布READY。V3F发送上一帧时V5F可采集
-另一帧；两帧均占用时才从物理帧起点丢弃。producer abort只回收自己的FILLING帧，
-不能修改另一帧的READING/READY数据。消费者按序号（含uint32回绕）读取。
-原厂读表借用原来的连续DTCM帧，但同时保留两个bank，协议/RPC取消逻辑不变。
-两核IPC版本2，必须使用新两核合并镜像，不能混用旧单帧核。
+384每槽6144B/8行，共24槽144KiB；两块DMA暂存12KiB。非末块可提前发布，
+末块等完整行数、字节数和物理帧结束通过后才发布END，浏览器仍只显示完整帧。
+旧队列未排空时从物理帧起点跳过新帧；中途队列满则停止当前帧发布，不发END，
+已发布块由消费者回收，不能覆盖持有的读租约。帧序号和队列计数均处理uint32回绕。
+原厂读表仅在采集暂停且队列/租约为空时借用连续144KiB数据区，RPC取消逻辑不变。
+256保留原双整帧路径。两核IPC版本3，必须更新匹配两核，不能混用版本2。
 
-用户当前验收要求：完整帧≥25FPS且持续流/重连稳定。输入约30FPS，整帧跳号明确
+384探测器及DVP请求60FPS，必须回读确认实际格式/帧率后启流；ACK不代替回读。
+源60FPS不等于主机60完整FPS。沿用USB2 NCM，不含USB3迁移；60FPS纯像素需求
+13.27104MB/s，实际吞吐及持续流/重连尚未上板验证。整帧跳号明确
 报告；跳号不是半帧，也不把source FPS当stream FPS。严格零丢帧bench仍可用于
 零丢帧要求，稳定性工具并不声称达成零丢帧。
 
-## 双帧内存账本
+## 接收数据域
+
+2026-09-18测温参数补查：原厂表代理新增`tpd-high/tpd-low`两个只读ID，主机运行
+`py -3 tools/read_mini2_module_files.py --parameters`。显式请求且无活动流时，V5F通过
+SDK对应的`01 26 8A`查询六字节Ktemp/Btemp/Address_CA，查询前后验证PN/SN/FW；
+不使用文件句柄，open/close_status=255。完整拒绝释放事务，超时/CRC/异常长度或
+未完成取消锁定后续读取，主机停止批量请求。384稳定29帧是用户确认，采集/帧流
+策略未因本轮参数查询调整；新版参数已在WN2384/FW00.00.07.01实机读回两档且解除暂停，
+身份/CRC/SHA与原表匹配。high=-14790/15219/6990，low=-12288/14400/10000；
+读后真实29帧持续恢复仍未验证，不泛化到其他PN/FW。
+开发双核Merge.bin218476B，IPC944B、堆余35144B/16556B；不自动烧录/写标定区。
+WN2384的六份原表已读，SDK旧1201项KT/BT及8192项NUC-T算法不能直接用于当前
+3601/16384项文件；正式温度保持不可用。
+
+2026-09-18接收数据域修复：WN2384/FW00.00.07.01的实际DMA内存按低字节在前排列，
+384 TPD在V5F原有块复制中融合字节对换，交给下游的仍为Y16BE；256和Picture不变。
+这描述接收内存，不推断未测的物理DVP总线时序。`/diag dvp.y16_input`表示配置输入端序，
+`roi.encoding=Y16BE`和ROI主统计对应规范wire；`roi.le_*`是规范wire的反向解释，
+`dvp.first_row_prefix_hex`仍是未经对换的接收字节。必须更新匹配的两核，V3F标记本身
+不能证明V5F已更新。实机原始证据见`out/radiometry/wn2384-endian-before/`，新固件未上板验证；
+byte swap不代替384自身标定、温漂补偿或gain/FFC/Vtemp状态绑定。
+
+## 当前分块缓存与历史双帧内存账本
+
+384当前目标map：0x200C0300数据区147456B，0x200A8000块元数据384B，
+原另外三个分段各保留32B启动访问探针。DMA12288B、IPC944B不变；
+V3F堆余35144B、V5F16556B。固定链接窗口和代码/堆/栈边界未重分配，
+减少的数组空间尚未自动转给堆。下表为原双帧版本的区域预留账本，不能当当前数组占用。
 
 | 用途 | 地址 | 容量 |
 |---|---|---|
@@ -55,6 +84,16 @@ V3F持续服务USB/HTTP，不进入Petros示例的STOP/WFE等待；共享状态�
 重查map/HEX入口、运行代码容量、四段地址/大小、堆边界及Merge.bin一致性。
 
 Flash仍为V3F184KiB、标定槽0x2E000/0x2F000、V5F起点0x30000/128KiB。
+2026-09-18标定保存保护：v1上传须校验header/payload CRC；跟踪每字节覆盖，
+只向另一物理槽写入，payload/header读回后最后发布magic。禁止活动流/读表期间上传提交，
+WCH双Flash的8KiB擦除模式会使两槽共页，检测后拒绝擦除。小包保存成功仍applied=false，
+不把存储当正式测温；384的索引/数据域/同帧状态及运行时应用待确认接入。
+备份/恢复使用`tools/calibration_storage_client.py`；仅显式restore写MCU槽，不写MINI2。
+2026-09-18黑体入口：`tools/calibrate_t384_blackbody.py`默认仅引导0°C、50°C，每点30帧，距离0.01m、发射率0.98；独立验证可显式补充，默认由用户后续验证。先检查HTTP可达性，再等待黑体确认；
+新增只读`cal-state`用原RPC/scratch读取gain/Vtemp/自动FFC开关/快门，并核对身份及查询首尾gain。
+只在显式请求期间暂停，不改变29帧采集/USB/帧流。采集与分析校验实际帧SHA/ROI和归档原表，
+输出带负温/小数支持的主机实验候选模型，未自动应用或写入任何标定区。
+边界快照不是逐帧状态，OEM仍未就绪；新状态查询、黑体流程及29帧恢复未上板验证。
 合并BIN空洞填FF，不能保证下载保留已保存标定数据；禁止Erase All/Clear CodeFlash。
 
 ## 构建与实测
@@ -67,9 +106,32 @@ GCC12.2.0实际构建两核；源码迭代不反复Clean。MRS首次生成两核
 
 主机回归 `bash tools/check_raw16_bench.sh`，两核门禁 `python3 tools/check_dualcore_artifacts.py`。
 设备[诊断](http://192.168.17.1/diag)与[成像页](http://192.168.17.1/)沿用原地址；
-新双帧身份 `mini2-dvp-v5f-double-frame-v2`，frame_banks=2，booted/initialized/dtcm_access均1。
+当前384 V5F块流版本恢复 `mini2-dvp-v5f-block-ring-60-v3`，pipeline.streaming=1、slot_count=24、
+capacity_bytes=147456、dualcore.frame_banks=0，booted/initialized/dtcm_access均1。
+256仍为double-frame-v2身份，不能用其字符串推断共享IPC仍为版本2。
+本轮完整撤回v4修改，V3F remote代理也恢复旧实现，故source.kind仍显示
+mini2-dvp-v5f-double-frame-v2；判断块流用pipeline.streaming/slot_count/capacity及匹配两核产物，
+不能只看源名字。
+用户已上板v3源60/流29；Windows10秒单流295完整帧/29.497FPS、6.524MB/s，
+序号缺口303、不完整帧/逆序0。活动诊断约2秒源+123、发布+61、丢弃+62，
+峰值22/24槽、abort0，NCM TX drop/背压0，TCP背压增长。v3的正常帧起点
+要求旧队列完全为空，有旧末块时跳过下一帧；v4放宽接帧后用户反馈降到约20FPS，
+已按要求撤回，恢复v3约29FPS策略。回退产物未上板复验，不能将恢复策略写成实测29恢复，
+也不能将NCM无背压当持续带宽已通过。
 HTTP连接关闭隔离和静态窗口补发已在单帧实板通过60秒及3次重连：约10FPS、恢复82–88ms。
-当前双帧版已主机/目标构建验证，≥25FPS的实板效果尚待下载后测试。
+网页保留断流退避重试和5秒无完整帧看门狗；2026-09-18补齐浏览器缓存返回及网络恢复重试，
+停止时清除连接状态，取消旧reader并隔离过期fetch/read结果，避免旧连接覆盖新连接。
+生命周期主机回归覆盖缓存返回、手动重连、过期fetch、EOF、停流、后台及网络恢复；本轮修改未上板验证。
+USB总线复位不保证触发TinyUSB卸载回调，故重新挂载时先下链、清理旧HTTP会话/待收帧/packet filter，
+再恢复网络，避免残留成像流占住唯一连接。正常USB suspend/resume继续保留会话。
+后续用户确认重连修复版仍会诊断断开、刷新页面不可达，只有断电重启恢复；上轮修复不能视为实机通过。
+补充下链发送隔离：清理旧TCP时产生的RST不进入新USB会话，也不从USB回调中递归处理事件。
+新版本diag含usb.recovery_guard=1及ncm.mounts/umounts/suspends/resumes；USB生命周期变化后，
+V3F原115200调试串口最多每2秒输出一行USB recover、共3个样本，稳定运行不周期打印。
+字段rst=BUS_RESET，m=mount/umount，s=suspend/resume，up=mounted/suspended，irq/xfer=USB中断/传输，
+rx=收到以太网帧，tx=提交/未就绪。串口输出在主循环，恢复期有短暂打印开销；未验证恢复期帧率。
+Windows只读网卡/IP/路由/邻居/diag检查脚本为tools/windows_user_action.ps1，结果out/reconnect/windows-network-latest.json。
+当前384块流版已目标构建/实际ISR主机验证，60完整FPS实板效果尚待下载后测试。
 
 原生Windows运行 `py -3 tools/t384_stream_stability.py --duration 60 --reconnects 3`，
 通过后 `py -3 tools/t384_stream_stability.py --duration 600 --reconnects 10`。

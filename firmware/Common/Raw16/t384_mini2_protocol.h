@@ -51,6 +51,14 @@ void t384_mini2_build_class_query_command(
     uint8_t response_data_length);
 void t384_mini2_build_vtemp_query_command(
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES]);
+/* OEM adv_tpd_parameters_get: gain 0=low, 1=high; six LE bytes.
+ * SDK documents TC2-C support; other PN/FW must be verified on hardware. */
+bool t384_mini2_build_tpd_parameters_query_command(
+    uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES], uint8_t gain);
+/* Explicit calibration snapshot, not metadata of an individual DVP frame.
+ * field 0=gain, 1=Vtemp, 2=auto FFC enabled, 3=shutter status. */
+bool t384_mini2_build_calibration_state_query_command(
+    uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES], uint8_t field);
 void t384_mini2_build_info_query_command(
     uint8_t command[T384_MINI2_DVP30_COMMAND_BYTES],
     uint8_t subcommand,

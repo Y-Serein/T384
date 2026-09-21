@@ -15,7 +15,7 @@ static bool irq_enabled;
 #if T384_DUALCORE
 #include "t384_dualcore.h"
 t384_dualcore_shared_t t384_dualcore_shared;
-uint8_t t384_dualcore_frame[T384_RAW16_FRAME_BYTES] __attribute__((aligned(32)));
+uint8_t t384_dualcore_frame[T384_CAPTURE_BUFFER_BYTES] __attribute__((aligned(32)));
 uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES] __attribute__((aligned(32)));
 uint8_t t384_frame1_dtcm[T384_FRAME1_DTCM_BYTES] __attribute__((aligned(32)));
 uint8_t t384_frame1_code[T384_FRAME1_CODE_BYTES] __attribute__((aligned(32)));
@@ -133,6 +133,7 @@ static void consume_limit(unsigned limit)
     t384_frame_chunk_view_t chunk;
     for (unsigned taken = 0u; taken < limit &&
          t384_frame_pipeline_peek(&chunk); ++taken) {
+        if (chunk.flags & T384_CHUNK_FLAG_FRAME_START) consumed_offset = 0u;
         assert(chunk.frame_offset == consumed_offset);
         assert((chunk.flags & T384_CHUNK_FLAG_TPD_Y16) != 0u);
         assert(((chunk.flags & T384_CHUNK_FLAG_FRAME_START) != 0u) ==
@@ -167,6 +168,15 @@ static void receive_block(uint32_t index, bool with_end)
     const uint32_t sequence = source_stats.frames;
     t384_raw16_fill(sequence, index * T384_MINI2_DMA_BLOCK_BYTES,
                     dvp_row_sink[dma_bank], T384_MINI2_DMA_BLOCK_BYTES);
+#if T384_RAW16_PROFILE == 384u
+    /* Serialize the independently observed WN2384 DVP order, while the
+     * consumer above continues to demand the existing Y16BE wire values. */
+    for (uint32_t i = 0u; i < T384_MINI2_DMA_BLOCK_BYTES; i += 2u) {
+        const uint8_t high = dvp_row_sink[dma_bank][i];
+        dvp_row_sink[dma_bank][i] = dvp_row_sink[dma_bank][i + 1u];
+        dvp_row_sink[dma_bank][i + 1u] = high;
+    }
+#endif
     dma_bank ^= 1u;
     fake_dvp.CR1 = (uint8_t)(RB_DVP_DMA_EN |
         (dma_bank != 0u ? RB_DVP_BUF_TOG : 0u));
@@ -186,6 +196,33 @@ int main(void)
     const uint32_t blocks = T384_MINI2_DVP_EXPECTED_ROWS /
                             T384_MINI2_DMA_BLOCK_ROWS;
     reset_capture();
+    /* Fixed byte vectors include a low-byte rollover. A one-count change
+     * must stay one count after capture, rather than jumping 65279 counts. */
+    {
+        uint8_t input[T384_MINI2_DMA_BLOCK_BYTES] __attribute__((aligned(4)));
+        uint8_t output[T384_MINI2_DMA_BLOCK_BYTES + 4u] __attribute__((aligned(4)));
+        for (uint32_t i = 0u; i < sizeof(input); i += 4u) {
+#if T384_RAW16_PROFILE == 384u
+            input[i] = 0xFFu; input[i + 1u] = 0x7Au;
+            input[i + 2u] = 0x00u; input[i + 3u] = 0x7Bu;
+#else
+            input[i] = 0x7Au; input[i + 1u] = 0xFFu;
+            input[i + 2u] = 0x7Bu; input[i + 3u] = 0x00u;
+#endif
+        }
+        memset(output, 0xA5, sizeof(output));
+        mini2_copy_dma_block(output, input);
+        for (uint32_t i = 0u; i < sizeof(input); i += 4u) {
+            assert(output[i] == 0x7Au && output[i + 1u] == 0xFFu);
+            assert(output[i + 2u] == 0x7Bu && output[i + 3u] == 0x00u);
+        }
+        assert(output[sizeof(input)] == 0xA5u);
+        source_stats.frame_mode = T384_FRAME_MODE_PICTURE;
+        mini2_copy_dma_block(output, input);
+        assert(memcmp(output, input, sizeof(input)) == 0);
+        source_stats.frame_mode = T384_FRAME_MODE_TPD_Y16;
+        puts("DVP Y16 low-byte rollover normalized; Picture bytes unchanged");
+    }
     assert(fake_dvp.COL_NUM == T384_MINI2_DMA_BLOCK_BYTES);
     assert(((fake_dvp.CR0 & RB_DVP_JPEG) != 0u) ==
            (T384_MINI2_DMA_BLOCK_ROWS != 1u));
@@ -193,7 +230,7 @@ int main(void)
         start_frame();
         for (uint32_t block = 0u; block < blocks; ++block) {
             receive_block(block, block + 1u == blocks);
-#if T384_DUALCORE
+#if T384_DUALCORE && !T384_PIPELINE_STREAMING
             if (block + 1u < blocks) {
                 t384_frame_chunk_view_t incomplete;
                 assert(!t384_frame_pipeline_peek(&incomplete));
@@ -208,12 +245,85 @@ int main(void)
     }
     assert(consumed_frames == 3u && source_stats.published_frames == 3u);
     assert(source_stats.roi_valid == 1u);
+    {
+        uint32_t expected_sum = 0u;
+        const uint32_t roi_x = (T384_RAW16_WIDTH - T384_RAW16_ROI_WIDTH) / 2u;
+        const uint32_t roi_y = (T384_RAW16_HEIGHT - T384_RAW16_ROI_HEIGHT) / 2u;
+        for (uint32_t y = roi_y; y < roi_y + T384_RAW16_ROI_HEIGHT; ++y)
+            for (uint32_t x = roi_x; x < roi_x + T384_RAW16_ROI_WIDTH; ++x)
+                expected_sum += t384_raw16_word(2u, y * T384_RAW16_WIDTH + x);
+        assert(source_stats.roi_sum == expected_sum);
+        const uint16_t prefix = t384_raw16_word(2u, 0u);
+#if T384_RAW16_PROFILE == 384u
+        assert(source_stats.dvp_first_row_prefix[0] == (uint8_t)prefix);
+        assert(source_stats.dvp_first_row_prefix[1] == (uint8_t)(prefix >> 8));
+#else
+        assert(source_stats.dvp_first_row_prefix[0] == (uint8_t)(prefix >> 8));
+        assert(source_stats.dvp_first_row_prefix[1] == (uint8_t)prefix);
+#endif
+    }
     assert(source_stats.dvp_last_frame_bytes == T384_RAW16_FRAME_BYTES);
     assert(fake_dvp.DMA_BUF0 == (uint32_t)(uintptr_t)dvp_row_sink[0]);
     assert(fake_dvp.DMA_BUF1 == (uint32_t)(uintptr_t)dvp_row_sink[1]);
     puts("DVP real ISR/ring/envelope: complete frames and byte integrity passed");
 
-#if T384_DUALCORE
+#if T384_PIPELINE_STREAMING
+    assert(T384_MINI2_DVP_FPS == 60u);
+    assert(T384_CAPTURE_BUFFER_BYTES < T384_RAW16_FRAME_BYTES);
+    reset_capture();
+    for (unsigned frame = 0u; frame < 101u; ++frame) {
+        start_frame();
+        for (uint32_t block = 0u; block < blocks; ++block) {
+            receive_block(block, false); consume();
+            assert(consumed_frames == frame);
+            if (block == 0u) assert(consumed_offset == T384_PIPELINE_CHUNK_BYTES);
+        }
+        interrupt(RB_DVP_IF_STP_FRM); consume();
+        assert(consumed_frames == frame + 1u);
+    }
+    assert(source_stats.published_frames == 101u && t384_frame_pipeline_empty());
+    puts("384 block ring: early first block, physical END withheld, 101 frames/wrap intact");
+    reset_capture(); start_frame(); receive_block(0u, false);
+    t384_frame_chunk_view_t held;
+    assert(t384_frame_pipeline_peek(&held));
+    uint8_t saved[T384_PIPELINE_CHUNK_BYTES]; memcpy(saved, held.data, sizeof(saved));
+    for (uint32_t block = 1u; block < blocks; ++block) receive_block(block, block + 1u == blocks);
+    assert(source_stats.published_frames == 0u && source_stats.dropped_frames == 1u);
+    assert(source_stats.dvp_bad_frames == 0u);
+    for (unsigned frame = 0u; frame < 3u; ++frame) {
+        start_frame();
+        for (uint32_t block = 0u; block < blocks; ++block) receive_block(block, block + 1u == blocks);
+        assert(memcmp(saved, held.data, sizeof(saved)) == 0);
+        assert(source_stats.published_frames == 0u);
+    }
+    t384_frame_pipeline_release(); consumed_offset = held.length; consume();
+    assert(consumed_frames == 0u && t384_frame_pipeline_empty());
+    uint8_t *scratch; size_t scratch_capacity;
+    assert(t384_frame_pipeline_scratch_acquire(&scratch, &scratch_capacity));
+    assert(scratch_capacity == T384_CAPTURE_BUFFER_BYTES);
+    assert(!t384_frame_pipeline_begin_frame(123u, 0u, T384_CHUNK_FLAG_TPD_Y16));
+    assert(!t384_frame_pipeline_peek(&held));
+    t384_frame_pipeline_scratch_release();
+    puts("384 ring: held lease survives overflow/abort, no END, scratch exclusion");
+    reset_capture();
+    t384_dualcore_shared.ring.committed = t384_dualcore_shared.ring.released = UINT32_MAX - 2u;
+    t384_dualcore_shared.ring.producer_next = t384_dualcore_shared.ring.consumer_next = 23u;
+    for (unsigned frame = 0u; frame < 2u; ++frame) {
+        const uint32_t sequence = frame == 0u ? UINT32_MAX : 0u;
+        assert(t384_frame_pipeline_begin_frame(sequence, 0u, T384_CHUNK_FLAG_TPD_Y16));
+        for (uint32_t offset = 0u; offset < T384_RAW16_FRAME_BYTES; offset += T384_PIPELINE_CHUNK_BYTES) {
+            uint8_t *data; uint16_t capacity;
+            assert(t384_frame_pipeline_acquire_write(&data, &capacity));
+            assert(t384_raw16_fill(sequence, offset, data, capacity) == capacity);
+            assert(t384_frame_pipeline_commit_write(capacity, offset + capacity == T384_RAW16_FRAME_BYTES));
+            consume();
+        }
+    }
+    assert(consumed_frames == 2u && t384_frame_pipeline_empty());
+    puts("384 ring: frame sequence and counters wrap without reordering");
+#endif
+
+#if T384_DUALCORE && !T384_PIPELINE_STREAMING
     /* One old chunk consumed per incoming DMA event: exercise repeated bank
      * reuse while the next frame remains invisible until physical frame end. */
     reset_capture();
@@ -283,14 +393,14 @@ int main(void)
     for (uint32_t block = 0u; block < blocks; ++block)
         receive_block(block, block + 1u == blocks);
     assert(source_stats.published_frames ==
-           (T384_DUALCORE || T384_MINI2_DMA_BLOCK_ROWS == 1u ? 1u : 0u));
+           ((T384_DUALCORE && !T384_PIPELINE_STREAMING) || T384_MINI2_DMA_BLOCK_ROWS == 1u ? 1u : 0u));
     t384_frame_pipeline_stats_t stats;
     t384_frame_pipeline_get_stats(&stats);
     assert(stats.acquire_no_slot ==
-           (T384_DUALCORE || T384_MINI2_DMA_BLOCK_ROWS == 1u ? 0u : 1u));
+           ((T384_DUALCORE && !T384_PIPELINE_STREAMING) || T384_MINI2_DMA_BLOCK_ROWS == 1u ? 0u : 1u));
     assert(stats.frames_aborted ==
-           (T384_DUALCORE || T384_MINI2_DMA_BLOCK_ROWS == 1u ? 0u : 1u));
-#if T384_DUALCORE
+           ((T384_DUALCORE && !T384_PIPELINE_STREAMING) || T384_MINI2_DMA_BLOCK_ROWS == 1u ? 0u : 1u));
+#if T384_DUALCORE && !T384_PIPELINE_STREAMING
     /* Keep a COPY consumer lease while three entire physical frames arrive.
      * Producer abort/recovery must never reclaim or overwrite this payload. */
     t384_frame_chunk_view_t held;
