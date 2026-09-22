@@ -2,14 +2,14 @@
 
 ## 30 秒恢复
 
-**已开始 640 专用架构迁移：V5F 将同时负责 MINI2/DVP、TCP/lwIP、TinyUSB NCM、HTTP；V3F 只保留启动、跨核握手、状态/RPC。当前源码尚未由 MRS 编译、尚未烧录，旧板上约 19.6 FPS 的证据仍属于旧 V3F-network 镜像，不能当作新架构成绩。**
+**当前 384/640 共用 V5F 数据面：V5F 负责 MINI2/DVP、TCP/lwIP、TinyUSB NCM、HTTP；V3F 只保留启动、跨核握手、状态/RPC。640 已在真实板上恢复 COPY 流并观察到约 28 FPS；384 的共用 V5F 构建刚完成源码兼容调整，尚未由 MRS 编译/烧录验证。**
 
 - 正式工程 `firmware/T384-RAW16-BENCH.wvsln`，当前网络数据面配置为 V5F、默认 profile 640；[预览](http://192.168.17.1/)和[诊断](http://192.168.17.1/diag)地址保持不变。V2 帧协议、NCM 描述符、IP 和浏览器接口未改；根页面在 V5F 版改为 gzip Flash 响应以满足 128 KiB 代码窗口。
 - 640 v2 每帧线上 331776 B，保留原 8-bit 亮度和块内 U/V；网页还原 UYVY，TCP/IP 校验保留。理论 30/60 FPS 需 9.95/19.91 MB/s 像素载荷，另有协议开销。先前 UYVY 成功窗口约 8.53 FPS、5.59 MB/s；v2 约 20 FPS、6.6 MB/s，但窗口断连。
 - 旧镜像最后可复核现场记录（`docs/logs.txt`，2026-09-20）：15.036 s 内 295 完整帧，19.619 FPS，6.509 MB/s；这些数字只用于迁移前基线。
 - 最新 `out/stability/640-throughput-latest.json`（2026-09-20 09:47:53 +08 开始）仍记录 12.425 s 后 WinError 10054、`stable=false`、断连后 `/diag` 超时；序号缺口 494，半帧/逆序 0。该文件和上面 17:58–18:03 记录来自旧板上镜像，不能证明当前源码或新产物已上板。
-- 新架构关键内存：640 packed ring 64 槽（165888 B）；V5F 网络 heap 32 KiB；NCM/USB 缓冲放共享 SRAM；HTTP/diag 状态放 V5F DTCM；网页 gzip 响应放 V5F Flash-only 段。V5F `TCP_WND=4*MSS` 是为 4 个 RX pbuf 的 lwIP sanity 约束，图像发送方向不变。
-- `T384_NETWORK_ON_V5F` 被明确限制为 640 架构实验；256/384 的旧 V3F-network 源码路径未改，但切换 profile 前需恢复对应旧工程/linker 配置。
+- 新架构关键内存：640 packed ring 64 槽（165888 B）或 384 non-packed ring 24 槽（147456 B）；V5F 网络 heap 32 KiB；NCM/USB 缓冲放共享 SRAM；HTTP/diag 状态放 V5F DTCM；网页 gzip 响应放 V5F Flash-only 段。V5F `TCP_WND=4*MSS` 是为 4 个 RX pbuf 的 lwIP sanity 约束，图像发送方向不变。
+- `T384_NETWORK_ON_V5F` 现覆盖 384/640；384 使用非打包 RAW16 ring，640 使用 packed Picture ring，共用 V5F 网络 heap/NCM/HTTP linker 布局。256 仍未纳入本轮共用数据面验证。
 - 2026-09-22 首份日志的 `stream.connects=0` 根因是 V5F NOLOAD 网络 heap 中的模块状态未清零，已加入 `t384_module_files_init()`；随后新日志已证明流能建立（`connects=1`、`frames=6`），但浏览器断开。进一步发现 64 槽迁移把 ring 容量误报成 packed 逻辑帧大小（165888 vs 331776），已修正 wire/HTTP `Frame-Bytes` 并加入 5 秒无进展清理，尚未再次 Build/烧录验证。
 - 用户负责 Windows/MRS/下载/上板测试；本轮代理未运行目标编译、未烧录、未 commit/push。工作区仍有用户既有未提交改动；不 reset/覆盖。
 
@@ -22,7 +22,7 @@
 
 ## 下一步
 
-1. 在 MRS 打开 `firmware/T384-RAW16-BENCH.wvsln`，先 Build V3F、再 Build V5F；核对新 map 中 V5F `highcode<=128 KiB`、`.t384_net_ncm/.t384_net_heap/.t384_net_http` 均未越界，Merge 同时包含两核。**禁止 Erase All / Clear CodeFlash**。
+1. 以 `T384_RAW16_PROFILE=640u` 和 `384u` 分别在 MRS 打开 `firmware/T384-RAW16-BENCH.wvsln`，每档先 Build V3F、再 Build V5F；核对 V5F `highcode<=128 KiB`、`.t384_frame`、`.t384_net_ncm/.t384_net_heap/.t384_net_http` 均未越界，Merge 同时包含两核。**禁止 Erase All / Clear CodeFlash**。
 2. 下载后先打开[诊断页](http://192.168.17.1/diag)，确认 `network.data_plane=v5f`；再开[预览页](http://192.168.17.1/)，确认页面能加载、图像和 diag 同时可用。
 3. 只测一个 20 秒窗口：记录完整帧 FPS、`pipeline.acquire_no_slot`、`ncm.xmit_ntb_*`、`tcp.sndbuf`、USBHS 复位/错误；新架构若不枚举或无图，先回退工程配置到提交基线，不改协议。
 4. 30 FPS 仍需真实板验证；手机、其他 PC、长时稳定性和正式测温未验证。

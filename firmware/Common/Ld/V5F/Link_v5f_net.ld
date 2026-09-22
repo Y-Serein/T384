@@ -235,7 +235,10 @@ SECTIONS
     .t384_frame1_data (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame1_data)) } >FRAME1_DATA
     .t384_dma (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_dma)) } >DMA_SHARED
     .t384_ipc (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_ipc)) } >IPC
-    ASSERT(SIZEOF(.t384_frame1_itcm) == 1056, "V5F network metadata size")
+    /* 640 packed metadata is 1056 B; 384 non-packed metadata is 384 B.
+     * Both profiles share this V5F network linker layout. */
+    ASSERT(SIZEOF(.t384_frame1_itcm) == 1056 ||
+           SIZEOF(.t384_frame1_itcm) == 384, "V5F network metadata size")
     ASSERT(SIZEOF(.t384_frame1_dtcm) == 18432 || SIZEOF(.t384_frame1_dtcm) == 32 || SIZEOF(.t384_frame1_dtcm) == 18144, "Frame1 DTCM size")
     ASSERT(SIZEOF(.t384_frame1_code) == 43008 || SIZEOF(.t384_frame1_code) == 32 || SIZEOF(.t384_frame1_code) == 41472, "Frame1 shared code size")
     ASSERT(SIZEOF(.t384_frame1_data) == 61440 || SIZEOF(.t384_frame1_data) == 32 || SIZEOF(.t384_frame1_data) == 56960, "Frame1 shared data size")
@@ -243,7 +246,10 @@ SECTIONS
     ASSERT(SIZEOF(.t384_net_ncm) <= LENGTH(FRAME1_CODE), "V5F NCM storage exceeds shared-code bank")
     ASSERT(SIZEOF(.t384_net_heap) <= LENGTH(FRAME1_DATA), "V5F lwIP storage exceeds shared-data bank")
     ASSERT(_start == 0x30000, "V5F wake address must match entry")
-    ASSERT(SIZEOF(.t384_frame) == 165888, "V5F network capture buffer size")
+    /* 640 packed ring: 165888 B; 384 non-packed ring: 147456 B. */
+    ASSERT(SIZEOF(.t384_frame) == 165888 ||
+           SIZEOF(.t384_frame) == 147456,
+           "V5F network capture buffer size")
     ASSERT(SIZEOF(.t384_ipc) <= 1024, "IPC exceeds 1 KiB")
     ASSERT(_ebss + 8192 <= _heap_end, "V5F needs 8 KiB heap margin")
 }

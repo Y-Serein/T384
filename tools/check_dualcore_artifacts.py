@@ -123,12 +123,14 @@ def main():
             if symbol(text, "_heap_end") != 0x200FB000:
                 fail("V5F heap overlaps secondary DTCM payload")
             margin = 0x200FB000 - symbol(text, "_ebss")
-            if network_on_v5f and profile_id == 640:
+            if network_on_v5f and profile_id in (384, 640):
                 ro_addr, ro_size = section(text, ".t384_http_rodata")
                 if ro_addr < 0x30000 or ro_addr + ro_size >= 0x50000:
                     fail("V5F compressed HTTP response is outside V5F Flash")
                 meta = section(text, ".t384_frame1_itcm")
-                if meta != (0x200FB000, 1056):
+                expected_meta = (0x200FB000,
+                                 1056 if profile_id == 640 else 384)
+                if meta != expected_meta:
                     fail("bad V5F network metadata placement")
                 for name, region_start, region_end in (
                         (".t384_net_http", 0x200FB000, 0x200FF800),

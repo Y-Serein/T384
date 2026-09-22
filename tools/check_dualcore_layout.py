@@ -94,7 +94,9 @@ void _start(void) { }
 ''')
     for core in ("V3F", "V5F"):
         obj, elf = temp / f"{core}.o", temp / f"{core}.elf"
-        script = FW / f"Common/Ld/{core}/Link_{core.lower()}.ld"
+        script_name = ("Link_v5f_net.ld" if core == "V5F"
+                       else f"Link_{core.lower()}.ld")
+        script = FW / f"Common/Ld/{core}/{script_name}"
         run("gcc", "-c", "-fno-pie", "-fno-asynchronous-unwind-tables",
             "-DT384_DUALCORE=1", "-DT384_RAW16_PROFILE=384u", f"-DCore_{core}",
             "-I" + str(FW / "Common/Raw16"), str(source), "-o", str(obj))
@@ -109,7 +111,7 @@ void _start(void) { }
         if core == "V5F":
             assert re.search(r"00030000\s+\w\s+_start\b", symbols)
             for name, addr, size in ((".t384_frame", 0x200C0300, 147456),
-                                     (".t384_frame1_itcm", 0x200A8000, 384),
+                                     (".t384_frame1_itcm", 0x200FB000, 384),
                                      (".t384_frame1_dtcm", 0x200FB000, 32),
                                      (".t384_frame1_code", 0x20125800, 32),
                                      (".t384_frame1_data", 0x2016D000, 32),
@@ -125,7 +127,8 @@ void _start(void) { }
             assert "PROVIDE( _heap_end = ORIGIN(RAM) + LENGTH(RAM) );" in script.read_text()
         else:
             assert heap and int(heap[1], 16) == 0x200FB000
-        for name, addr in (("t384_frame1_itcm", 0x200A8000),
+        itcm_symbol_addr = 0x200FB000 if core == "V5F" else 0x200A8000
+        for name, addr in (("t384_frame1_itcm", itcm_symbol_addr),
                            ("t384_frame1_dtcm", 0x200FB000),
                            ("t384_frame1_code", 0x20125800),
                            ("t384_frame1_data", 0x2016D000)):

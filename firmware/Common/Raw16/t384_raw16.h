@@ -10,13 +10,16 @@
 #endif
 
 /*
- * The 640 profile is the first product profile that moves the high-rate
- * network data plane onto V5F.  Keep this as an explicit build switch so the
- * proven V3F-network arrangement remains a one-line rollback for bring-up
- * and for the 256/384 compatibility builds.
+ * The 384 and 640 profiles use the V5F high-rate network data plane.  Keep
+ * the selector derived from the profile so changing the profile does not
+ * leave a stale project-level network switch behind.
  */
 #ifndef T384_NETWORK_ON_V5F
+#if T384_RAW16_PROFILE == 384u || T384_RAW16_PROFILE == 640u
+#define T384_NETWORK_ON_V5F 1
+#else
 #define T384_NETWORK_ON_V5F 0
+#endif
 #endif
 
 #if T384_RAW16_PROFILE == 256u
@@ -32,8 +35,9 @@
 #error "T384_RAW16_PROFILE must be 256u, 384u or 640u"
 #endif
 
-#if T384_NETWORK_ON_V5F && T384_RAW16_PROFILE != 640u
-#error "T384_NETWORK_ON_V5F is currently reserved for the 640 network-data-plane image"
+#if T384_NETWORK_ON_V5F && \
+    (T384_RAW16_PROFILE != 384u && T384_RAW16_PROFILE != 640u)
+#error "T384_NETWORK_ON_V5F is currently reserved for the 384/640 network-data-plane images"
 #endif
 #define T384_RAW16_BYTES_PER_PIXEL 2u
 #define T384_RAW16_PIXELS (T384_RAW16_WIDTH * T384_RAW16_HEIGHT)
