@@ -5,6 +5,9 @@
 #include "t384_compiler.h"
 #include "t384_time.h"
 #include "ch32h417.h"
+#if T384_NETWORK_ON_V5F
+#include "t384_v5f_net_memory.h"
+#endif
 
 t384_dualcore_shared_t t384_dualcore_shared
     __attribute__((section(".t384_ipc"), aligned(32)));
@@ -20,6 +23,10 @@ uint8_t t384_frame1_code[T384_FRAME1_CODE_BYTES]
     __attribute__((section(".t384_frame1_code"), aligned(32)));
 uint8_t t384_frame1_data[T384_FRAME1_DATA_BYTES]
     __attribute__((section(".t384_frame1_data"), aligned(32)));
+#if T384_NETWORK_ON_V5F && T384_PIPELINE_PACKED_PICTURE
+uint8_t t384_picture_expand_scratch[T384_PIPELINE_CHUNK_BYTES]
+    T384_NET_SCRATCH_STORAGE;
+#endif
 #endif
 
 void t384_dualcore_init(void)

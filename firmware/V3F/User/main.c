@@ -5,9 +5,11 @@
 #include "t384_frame_pipeline.h"
 #include "t384_frame_source.h"
 #include "t384_dualcore.h"
+#if !T384_NETWORK_ON_V5F
 #include "t384_ncm.h"
-#include "t384_time.h"
 #include "tusb.h"
+#endif
+#include "t384_time.h"
 
 #if !defined(T384_HOST_SYNTAX_CHECK)
 #if !defined(__OPTIMIZE__) || defined(__OPTIMIZE_SIZE__)
@@ -28,21 +30,27 @@ int main(void)
            (unsigned long)SystemClock, (unsigned long)SystemCoreClock);
     Delay_Ms(500u);
 
-    /* Match the USBHS pin-release sequence proven by Petros_DVP. */
+    /* Keep the USBHS pin-release sequence on the network owner. */
+#if !T384_NETWORK_ON_V5F
     RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB, ENABLE);
     RCC_HB1PeriphClockCmd(RCC_HB1Periph_SWPMI, ENABLE);
     SWPMI_BypassCmd(ENABLE);
     GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
-
-    t384_ncm_prepare_identity();
+#endif
 
 #if T384_DUALCORE
-    t384_frame_pipeline_init();
+    t384_frame_pipeline_init();     /* frame pipeline */
     t384_time_init();
-    printf("RAW16 dual-core V5F capture @0x30000, V3F network\r\n");
+#if T384_NETWORK_ON_V5F
+    printf("RAW16 dual-core V5F capture + network data plane\r\n");
 #else
+    t384_ncm_prepare_identity();
+    printf("RAW16 dual-core V5F capture @0x30000, V3F network\r\n");
+#endif
+#else
+    t384_ncm_prepare_identity();
     t384_time_init();
-    t384_frame_pipeline_init();     /*帧流水+数据源*/
+    t384_frame_pipeline_init();     /* frame pipeline */
     if (!t384_frame_source_init()) {
         printf("RAW16 capture adapter init failed\r\n");
         while (1) {
@@ -57,6 +65,7 @@ int main(void)
 
 #endif
 
+#if !T384_NETWORK_ON_V5F
     const tusb_rhport_init_t usb_init = {
         .role = TUSB_ROLE_DEVICE,
         .speed = TUSB_SPEED_AUTO,
@@ -71,18 +80,23 @@ int main(void)
     const bool network_ready = t384_ncm_init();
     printf(network_ready ? "NCM/lwIP init passed\r\n"
                          : "NCM/lwIP init failed; USB kept active\r\n");
+#endif
 
 #if T384_DUALCORE
-    /* Wake after network initialization so the DTCM-probe timeout does not
-     * include USB/lwIP startup latency. */
+    /* Wake after shared-memory initialization.  In V5F-network mode the
+     * network stack is initialized by the awakened core itself. */
     NVIC_WakeUp_V5F(T384_V5F_ENTRY);
 #endif
 
     while (1) {
+#if !T384_NETWORK_ON_V5F
         tud_task();
         t384_frame_source_task();
         if (network_ready) {
             t384_ncm_task();
         }
+#else
+        t384_frame_source_task();
+#endif
     }
 }

@@ -1059,6 +1059,7 @@ void DVP_IRQHandler(void)
 
 bool t384_frame_source_init(void)
 {
+    t384_module_files_init();
     memset((void *)&source_stats, 0, sizeof(source_stats));
     memset(dvp_row_sink, 0, sizeof(dvp_row_sink));
     stats_sequence = 0u;

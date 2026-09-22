@@ -5,12 +5,21 @@
 #include <string.h>
 
 #include "ch32h417.h"
+#include "t384_raw16.h"
 
 #ifndef BYTE_ORDER
 #define BYTE_ORDER LITTLE_ENDIAN
 #endif
 #define LWIP_CHKSUM_ALGORITHM 3
 #define LWIP_RAND() ((uint32_t)SysTick0->CNT ^ DBGMCU_GetCHIPID())
+
+#if T384_NETWORK_ON_V5F && defined(Core_V5F)
+/* Relocate lwIP's generated heap/memp arrays out of the 19 KiB V5F local
+ * .bss window.  The linker reserves .t384_net_heap in shared SRAM. */
+#define LWIP_DECLARE_MEMORY_ALIGNED(variable_name, size) \
+    uint8_t variable_name[LWIP_MEM_ALIGN_BUFFER(size)] \
+        __attribute__((section(".t384_net_heap"), aligned(32)))
+#endif
 
 /*
  * lwIP's stock checksum-on-copy helper performs a full memcpy and then reads

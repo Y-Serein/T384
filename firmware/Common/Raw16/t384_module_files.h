@@ -33,6 +33,9 @@ void t384_module_file_port_resume(void);
 bool t384_module_file_port_tx(uint8_t byte);
 int t384_module_file_port_rx(void); /* -1 empty, -2 hardware/queue error */
 
+/* Network buffers may live in NOLOAD shared SRAM; clear transaction state at
+ * boot before HTTP checks held/busy flags. */
+void t384_module_files_init(void);
 int t384_module_files_start(const char *id, bool stream_active, uint32_t now);
 void t384_module_files_task(uint32_t now);
 void t384_module_files_abort(uint32_t now);

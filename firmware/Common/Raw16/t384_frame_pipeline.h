@@ -22,14 +22,24 @@
 #define T384_PIPELINE_STREAMING (T384_DUALCORE && (T384_RAW16_PROFILE == 384u || T384_RAW16_PROFILE == 640u))
 #define T384_PIPELINE_PACKED_PICTURE (T384_PIPELINE_STREAMING && T384_RAW16_PROFILE == 640u)
 #if T384_PIPELINE_PACKED_PICTURE
+#define T384_PIPELINE_PACKED_FRAME_BYTES \
+    ((T384_RAW16_WIDTH * 4u + 32u) * (T384_RAW16_HEIGHT / 4u))
 #define T384_PIPELINE_STORAGE_CHUNK_BYTES (T384_PIPELINE_CHUNK_BYTES / 2u + 32u)
 #else
+#define T384_PIPELINE_PACKED_FRAME_BYTES T384_RAW16_FRAME_BYTES
 #define T384_PIPELINE_STORAGE_CHUNK_BYTES T384_PIPELINE_CHUNK_BYTES
 #endif
 #if T384_PIPELINE_STREAMING
 #if T384_RAW16_PROFILE == 640u
-/* Entire native Picture frame fits even when TCP is blocked. */
+/* The V3F-network baseline keeps a whole packed frame queued.  When the
+ * network owner is V5F, the producer and consumer run on the same 400 MHz
+ * core and only a bounded in-flight window is needed; retaining 64 slots
+ * frees the secondary SRAM banks for the network stack. */
+#if T384_NETWORK_ON_V5F
+#define T384_PIPELINE_SLOT_COUNT 64u
+#else
 #define T384_PIPELINE_SLOT_COUNT 128u
+#endif
 #else
 #define T384_PIPELINE_SLOT_COUNT 24u
 #endif

@@ -60,6 +60,7 @@ static int request(uint32_t command, uint32_t argument, const char *id,
 }
 
 bool t384_frame_source_init(void) { return true; }
+void t384_module_files_init(void) { }
 void t384_frame_source_task(void)
 {
     t384_dualcore_shared_t *s = &t384_dualcore_shared;

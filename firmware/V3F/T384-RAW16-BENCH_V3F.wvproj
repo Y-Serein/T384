@@ -101,7 +101,12 @@
 				"post_script_description": "",
 				"excludeResources": [
 					"${project}/Ld/V5F",
-					"${project}/Startup/startup_ch32h417_v5f.S"
+					"${project}/Startup/startup_ch32h417_v5f.S",
+					"${project}/ThirdParty",
+					"${project}/Common/USB",
+					"${project}/Common/App/http_status.c",
+					"${project}/Common/App/t384_ncm.c",
+					"${project}/Common/Raw16/t384_module_files_http.c"
 				],
 				"optimization": {
 					"level": "size",
@@ -179,10 +184,11 @@
 					"preprocessor": {
 						"do_not_search_system_directories": false,
 						"preprocess_only": false,
-						"defined_symbols": [
-							"Core_V3F",
-							"T384_DUALCORE=1",
-							"Run_Core=2"
+					"defined_symbols": [
+						"Core_V3F",
+						"T384_DUALCORE=1",
+						"Run_Core=2",
+						"T384_NETWORK_ON_V5F=1"
 						],
 						"undefined_symbols": []
 					},

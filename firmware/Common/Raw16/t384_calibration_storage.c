@@ -1,7 +1,10 @@
 #include "t384_calibration_storage.h"
+#include "t384_v5f_net_memory.h"
 #include <string.h>
 
-#if defined(Core_V3F) && !defined(T384_HOST_SYNTAX_CHECK)
+#if (defined(Core_V3F) || \
+     (defined(Core_V5F) && T384_NETWORK_ON_V5F)) && \
+    !defined(T384_HOST_SYNTAX_CHECK)
 #define T384_CAL_USE_WCH_FLASH 1
 #include "ch32h417_flash.h"
 #endif
@@ -9,12 +12,14 @@
 typedef char t384_cal_slot_size_check[(sizeof(t384_cal_manifest_t) < T384_CAL_STORAGE_SLOT_SIZE) ? 1 : -1];
 
 #define SLOT_COUNT 2u
-static t384_cal_manifest_t g_active;
-static uint8_t g_payload[T384_CAL_STORAGE_MAX_PAYLOAD];
-static t384_cal_manifest_t g_staging;
-static uint8_t g_staging_payload[T384_CAL_STORAGE_MAX_PAYLOAD];
-static uint8_t g_staging_valid;
-static uint8_t g_written[T384_CAL_STORAGE_MAX_PAYLOAD / 8u];
+static t384_cal_manifest_t g_active T384_NET_CONTROL_STORAGE;
+static uint8_t g_payload[T384_CAL_STORAGE_MAX_PAYLOAD] T384_NET_CONTROL_STORAGE;
+static t384_cal_manifest_t g_staging T384_NET_CONTROL_STORAGE;
+static uint8_t g_staging_payload[T384_CAL_STORAGE_MAX_PAYLOAD]
+    T384_NET_CONTROL_STORAGE;
+static uint8_t g_staging_valid T384_NET_CONTROL_STORAGE;
+static uint8_t g_written[T384_CAL_STORAGE_MAX_PAYLOAD / 8u]
+    T384_NET_CONTROL_STORAGE;
 static uint32_t g_written_count;
 static unsigned g_active_slot;
 

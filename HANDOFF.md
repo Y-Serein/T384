@@ -1,15 +1,17 @@
-# T384/T640 当前交接（2026-09-21）
+# T384/T640 当前交接（2026-09-22）
 
 ## 30 秒恢复
 
-**当前仍是 640 Picture 源端约 60 FPS、HTTP v2 完整帧约 19.6 FPS/6.5 MB/s；目标保底 30 FPS 未达到。20 FPS 的采集端根因已基本排除：DVP FIFO/坏帧/打包拒绝为 0，瓶颈证据集中在 V3F TCP 发送缓存耗尽和 NCM 背压。最近现场流仍会以 WinError 10054 断开，断连/USB 复位/MCU 重启根因未证实。当前工作区 V3F 产物含 NCM/TCP 诊断字段，但 V5F map/HEX 仍旧，双核产物门禁失败，不能把现有 Merge 当作可下载版本。**
+**已开始 640 专用架构迁移：V5F 将同时负责 MINI2/DVP、TCP/lwIP、TinyUSB NCM、HTTP；V3F 只保留启动、跨核握手、状态/RPC。当前源码尚未由 MRS 编译、尚未烧录，旧板上约 19.6 FPS 的证据仍属于旧 V3F-network 镜像，不能当作新架构成绩。**
 
-- 正式工程 `firmware/T384-RAW16-BENCH.wvsln`，V5F 采集、V3F NCM/HTTP，默认 profile 640；[预览](http://192.168.17.1/)和[诊断](http://192.168.17.1/diag)。最终接收端仍需 iPhone、Android、PC 普通浏览器；用户已允许更改成像帧流协议，但裸 UDP 不能直接给普通网页读取。当前只做 640 成像，未完成 640 正式测温。
+- 正式工程 `firmware/T384-RAW16-BENCH.wvsln`，当前网络数据面配置为 V5F、默认 profile 640；[预览](http://192.168.17.1/)和[诊断](http://192.168.17.1/diag)地址保持不变。V2 帧协议、NCM 描述符、IP 和浏览器接口未改；根页面在 V5F 版改为 gzip Flash 响应以满足 128 KiB 代码窗口。
 - 640 v2 每帧线上 331776 B，保留原 8-bit 亮度和块内 U/V；网页还原 UYVY，TCP/IP 校验保留。理论 30/60 FPS 需 9.95/19.91 MB/s 像素载荷，另有协议开销。先前 UYVY 成功窗口约 8.53 FPS、5.59 MB/s；v2 约 20 FPS、6.6 MB/s，但窗口断连。
-- 最新可复核现场记录（`docs/logs.txt`，2026-09-20 17:58–18:03）：15.036 s 内 295 完整帧，19.619 FPS，6.509 MB/s，跳过源帧 602、残帧/序号错误 0；12.029 s 复测同为 19.619 FPS。活动 `/diag`：源 60 FPS、`pipeline.high_water_chunks=97/128`、`pipeline.acquire_no_slot=1510`、`stream.sendbuf_stalls=11297`、`stream.write_mem_stalls=0`、`ncm.tx_backpressure=9488`、`ncm.tx_drop=123`、`tcp.sndbuf=0`、`tcp.snd_wnd/cwnd=65535`。这证明下游消费受限，但旧镜像没有新的 `xmit_ntb_*` 统计，不能区分 USB 完成慢、NTB 聚合不足或 TCP COPY/校验 CPU 上限。
+- 旧镜像最后可复核现场记录（`docs/logs.txt`，2026-09-20）：15.036 s 内 295 完整帧，19.619 FPS，6.509 MB/s；这些数字只用于迁移前基线。
 - 最新 `out/stability/640-throughput-latest.json`（2026-09-20 09:47:53 +08 开始）仍记录 12.425 s 后 WinError 10054、`stable=false`、断连后 `/diag` 超时；序号缺口 494，半帧/逆序 0。该文件和上面 17:58–18:03 记录来自旧板上镜像，不能证明当前源码或新产物已上板。
-- `docs/logs.txt` 顶部是停流后的快照，不能反推断连瞬间原因。当前源码已有 `ncm.xmit_ntb_*`、`tcp.*` 诊断，但板上旧镜像尚未证明包含它们。
-- 用户负责 Windows/MRS/下载/上板测试；代理本轮只做只读分析、主机检查和交接/记忆更新，未烧录、未运行 WCH 目标构建。工作区仍有大量用户既有未提交改动；不 reset/commit/push。
+- 新架构关键内存：640 packed ring 64 槽（165888 B）；V5F 网络 heap 32 KiB；NCM/USB 缓冲放共享 SRAM；HTTP/diag 状态放 V5F DTCM；网页 gzip 响应放 V5F Flash-only 段。V5F `TCP_WND=4*MSS` 是为 4 个 RX pbuf 的 lwIP sanity 约束，图像发送方向不变。
+- `T384_NETWORK_ON_V5F` 被明确限制为 640 架构实验；256/384 的旧 V3F-network 源码路径未改，但切换 profile 前需恢复对应旧工程/linker 配置。
+- 2026-09-22 首份日志的 `stream.connects=0` 根因是 V5F NOLOAD 网络 heap 中的模块状态未清零，已加入 `t384_module_files_init()`；随后新日志已证明流能建立（`connects=1`、`frames=6`），但浏览器断开。进一步发现 64 槽迁移把 ring 容量误报成 packed 逻辑帧大小（165888 vs 331776），已修正 wire/HTTP `Frame-Bytes` 并加入 5 秒无进展清理，尚未再次 Build/烧录验证。
+- 用户负责 Windows/MRS/下载/上板测试；本轮代理未运行目标编译、未烧录、未 commit/push。工作区仍有用户既有未提交改动；不 reset/覆盖。
 
 ## 已尝试及结果
 
@@ -20,21 +22,22 @@
 
 ## 下一步
 
-1. 用户先按现有双核流程重建 **V3F+V5F**，直到 `python3 -B tools/check_dualcore_artifacts.py` 通过；**禁止 Erase All / Clear CodeFlash**。核对新 map/HEX/Merge 的共同时间与 SHA，再下载，不沿用当前 stale V5F 产物。
-2. 新镜像只做一个 20 秒单流窗口：关闭预览页，保存活动 `/diag` 两次（间隔至少 2 s）、抓流结果、Windows 网卡状态和串口输出；确认 `/diag` 出现 `ncm.xmit_ntb_submit/complete/errors/bytes/datagrams`。若再 `10054`，先区分 USB 复位、MCU 重启、HTTP/TCP 关闭。
-3. 用 NTB 增量计算判断唯一控制变量：`complete≈submit` 且 `errors=0` 时看每 NTB datagrams 分布；`free_ntb=0`/complete 落后时看 USBHS 完成节拍；TCP `sndbuf=0` 但 NCM 不堵时再查 TCP COPY/校验。证据前不改 NCM 尺寸、窗口、校验或 zero-copy。
-4. 原因确认后一次只改一个发送层变量，至少复测 20 秒完整帧/字节、序号缺口、source drop、NCM drop、复位与重连；30 FPS 需约 9.95 MB/s 打包载荷。手机和其他 PC 系统尚未验证。
+1. 在 MRS 打开 `firmware/T384-RAW16-BENCH.wvsln`，先 Build V3F、再 Build V5F；核对新 map 中 V5F `highcode<=128 KiB`、`.t384_net_ncm/.t384_net_heap/.t384_net_http` 均未越界，Merge 同时包含两核。**禁止 Erase All / Clear CodeFlash**。
+2. 下载后先打开[诊断页](http://192.168.17.1/diag)，确认 `network.data_plane=v5f`；再开[预览页](http://192.168.17.1/)，确认页面能加载、图像和 diag 同时可用。
+3. 只测一个 20 秒窗口：记录完整帧 FPS、`pipeline.acquire_no_slot`、`ncm.xmit_ntb_*`、`tcp.sndbuf`、USBHS 复位/错误；新架构若不枚举或无图，先回退工程配置到提交基线，不改协议。
+4. 30 FPS 仍需真实板验证；手机、其他 PC、长时稳定性和正式测温未验证。
 
 ## 关键相对路径
 
-- `firmware/Common/App/http_status.c`：HTTP v2 发送和最新 USBHS 只读诊断；`t384_ncm.c`、`lwipopts.h`、`tusb_config.h`：NCM/TCP 配置。
+- `firmware/Common/App/http_status.c`：V5F HTTP v2 发送/诊断；`t384_ncm.c`、`lwipopts.h`、`tusb_config.h`：V5F NCM/TCP 配置；`device_console_http_gz.inc`：V5F gzip 根页面。
+- `firmware/Common/Ld/V5F/Link_v5f_net.ld`：V5F 网络数据面内存分区；`t384_v5f_net_memory.{h,c}`：网络堆/缓冲段属性。
 - `firmware/Common/Raw16/t384_packed_picture.h`、`t384_raw16_wire.{c,h}`、`t384_frame_pipeline.h`：打包与帧流；`web/raw16_bench_console.html` 和生成的 `firmware/Common/App/device_console_html.inc`：网页解码。
 - `tools/t384_stream_stability.py`、`tools/t384_raw16_bench.py`、`out/stability/640-throughput-latest.json`、`docs/logs.txt`：抓流工具及最新证据。
 - `docs/design/usb_net_raw16_throughput_optimization_20260918.md` 第 11–12 节：外部 BL618 思路和更正，不能当 H417 实测。
 
 ## 验证状态与未决问题
 
-本轮已运行 `bash tools/check_dualcore_firmware.sh`（主机双核结构/边界检查通过）、`bash tools/check_raw16_bench.sh`（最终因双核 stale V5F 产物门禁失败）和 `git diff --check`（通过）。`python3 -B tools/check_dualcore_artifacts.py` 明确失败：`stale V5F map; newer input firmware/Common/App/http_status.c`。未运行 WCH 目标编译、未烧录、未上板；现有 19.619 FPS/10054 证据仍是旧镜像。NTB 聚合效率、USB 完成节拍、TCP COPY/校验 CPU 占用、真实总线吞吐上限、浏览器处理耗时、手机兼容性仍未知。
+本轮只做源码/工程/内存布局修改；已做 JSON/XML 读回、gzip 资产完整性核对和 `git diff --check`，未运行 WCH 目标编译、未烧录、未上板。新 map/HEX/Merge、V5F 代码窗口、网络 SRAM 余量、USBHS 枚举、完整帧 FPS 和重连均未验证。
 
 ---
 

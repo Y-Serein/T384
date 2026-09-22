@@ -78,9 +78,12 @@ def main():
     profile = re.search(r"#define\s+T384_RAW16_PROFILE\s+(\d+)u",
                         (FW / "Common/Raw16/t384_raw16.h").read_text())
     profile_id = int(profile[1])
+    v5f_project = (FW / "V5F/T384-RAW16-BENCH_V5F.wvproj").read_text()
+    network_on_v5f = "T384_NETWORK_ON_V5F=1" in v5f_project
     frame_bytes = {640: 655360, 384: 221184, 256: 98304}[profile_id]
     streaming = profile_id in (384, 640)
-    capture_bytes = {640: 220320, 384: 147456, 256: 98304}[profile_id]
+    capture_bytes = (165888 if network_on_v5f and profile_id == 640
+                     else {640: 220320, 384: 147456, 256: 98304}[profile_id])
     for core, path in maps.items():
         if path.stat().st_mtime_ns < latest.stat().st_mtime_ns:
             fail(f"stale {core} map; newer input {latest.relative_to(ROOT)}; rebuild both cores")
@@ -94,7 +97,8 @@ def main():
             fail("cross-core IPC layout sizes differ")
         ipc_size = size
         code_addr, code_size = section(text, ".highcode")
-        expected_code = (0x20100000, 150 * 1024) if core == "V3F" else (0x200A0000, 32 * 1024)
+        expected_code = ((0x20100000, 150 * 1024) if core == "V3F" else
+                         (0x200A0000, 128 * 1024 if network_on_v5f else 32 * 1024))
         if code_addr != expected_code[0] or code_size > expected_code[1]:
             fail(f"{core} runtime code exceeds its RAM partition")
         if section(text, ".stack") != (
@@ -119,14 +123,31 @@ def main():
             if symbol(text, "_heap_end") != 0x200FB000:
                 fail("V5F heap overlaps secondary DTCM payload")
             margin = 0x200FB000 - symbol(text, "_ebss")
-            secondary_sizes = {640: (2048, 18144, 41472, 56960),
-                               384: (384, 32, 32, 32),
-                               256: (98304, 18432, 43008, 61440)}[profile_id]
-            for name, addr, size in zip(
-                    (".t384_frame1_itcm", ".t384_frame1_dtcm", ".t384_frame1_code", ".t384_frame1_data"),
-                    (0x200A8000, 0x200FB000, 0x20125800, 0x2016D000), secondary_sizes):
-                if section(text, name) != (addr, size):
-                    fail(f"bad secondary frame region {name}")
+            if network_on_v5f and profile_id == 640:
+                ro_addr, ro_size = section(text, ".t384_http_rodata")
+                if ro_addr < 0x30000 or ro_addr + ro_size >= 0x50000:
+                    fail("V5F compressed HTTP response is outside V5F Flash")
+                meta = section(text, ".t384_frame1_itcm")
+                if meta != (0x200FB000, 1056):
+                    fail("bad V5F network metadata placement")
+                for name, region_start, region_end in (
+                        (".t384_net_http", 0x200FB000, 0x200FF800),
+                        (".t384_net_ncm", 0x20125800, 0x20130000),
+                        (".t384_net_heap", 0x2016D000, 0x2017C000)):
+                    addr, size = section(text, name)
+                    if addr < region_start or addr + size > region_end:
+                        fail(f"{name} exceeds V5F network SRAM bank")
+                secondary_sizes = None
+            else:
+                secondary_sizes = {640: (2048, 18144, 41472, 56960),
+                                   384: (384, 32, 32, 32),
+                                   256: (98304, 18432, 43008, 61440)}[profile_id]
+            if secondary_sizes is not None:
+                for name, addr, size in zip(
+                        (".t384_frame1_itcm", ".t384_frame1_dtcm", ".t384_frame1_code", ".t384_frame1_data"),
+                        (0x200A8000, 0x200FB000, 0x20125800, 0x2016D000), secondary_sizes):
+                    if section(text, name) != (addr, size):
+                        fail(f"bad secondary frame region {name}")
             if margin < 8192:
                 fail(f"V5F heap margin {margin} B < 8 KiB")
             if re.search(r"\.bss\.(?:ncm_epbuf|ram_heap)\s+0x", text):

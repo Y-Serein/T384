@@ -159,7 +159,12 @@ bool t384_frame_pipeline_scratch_acquire(uint8_t **data, size_t *capacity)
     if (!__atomic_compare_exchange_n(&S.read_leased, &expected, 1u, false,
                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return false;
     R.scratch_leased = 1u;
-    *data = t384_dualcore_frame; *capacity = T384_CAPTURE_BUFFER_BYTES;
+#if T384_NETWORK_ON_V5F
+    *data = (uint8_t *)(uintptr_t)0x200C0300u;
+#else
+    *data = t384_dualcore_frame;
+#endif
+    *capacity = T384_CAPTURE_BUFFER_BYTES;
     __atomic_store_n(&S.read_leased, 0u, __ATOMIC_RELEASE);
     return true;
 }

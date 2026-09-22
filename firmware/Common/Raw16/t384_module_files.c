@@ -1,5 +1,6 @@
 #include "t384_module_files.h"
 #include "t384_mini2_protocol.h"
+#include "t384_v5f_net_memory.h"
 
 #if !T384_DUALCORE || defined(Core_V5F)
 
@@ -18,16 +19,31 @@ static const char *const ids[] = {
     "kt-high", "kt-low", "bt-high", "bt-low", "nuct-high", "nuct-low",
     "distance-high", "distance-low", "tpd-high", "tpd-low", "cal-state"
 };
-static t384_module_file_status_t status;
+static t384_module_file_status_t status T384_NET_CONTROL_STORAGE;
 static uint8_t *scratch;
-static uint8_t tx[T384_MINI2_FILE_OPEN_BYTES];
-static uint8_t rx[T384_MINI2_FILE_BLOCK_BYTES + 9u];
+static uint8_t tx[T384_MINI2_FILE_OPEN_BYTES] T384_NET_CONTROL_STORAGE;
+static uint8_t rx[T384_MINI2_FILE_BLOCK_BYTES + 9u] T384_NET_CONTROL_STORAGE;
 static uint8_t phase, selected, file_id;
 static uint16_t tx_length, tx_offset, rx_length, expected_data;
 static uint32_t started, command_started, ready_at, quiet_at, drain_started;
 static bool pending, may_be_open;
-static uint8_t identity_raw[3][32];
-static uint16_t identity_length[3];
+static uint8_t identity_raw[3][32] T384_NET_CONTROL_STORAGE;
+static uint16_t identity_length[3] T384_NET_CONTROL_STORAGE;
+
+void t384_module_files_init(void)
+{
+    memset(&status, 0, sizeof(status));
+    memset(tx, 0, sizeof(tx));
+    memset(rx, 0, sizeof(rx));
+    memset(identity_raw, 0, sizeof(identity_raw));
+    memset(identity_length, 0, sizeof(identity_length));
+    scratch = NULL;
+    phase = selected = file_id = 0u;
+    tx_length = tx_offset = rx_length = expected_data = 0u;
+    started = command_started = ready_at = quiet_at = drain_started = 0u;
+    pending = may_be_open = false;
+    status.uart_status = status.open_status = status.close_status = 0xFFu;
+}
 
 static bool query_phase(void)
 { return phase==PARAMETERS || (phase>=STATE_GAIN && phase<=STATE_GAIN_AFTER); }
@@ -146,8 +162,8 @@ static void issue(uint32_t now)
         t384_mini2_build_info_query_command(tx, commands[index], (uint8_t)expected_data);
     } else if (phase == PARAMETERS) {
         expected_data = 6u;
-        if (!t384_mini2_build_tpd_parameters_query_command(
-                tx, (selected & 1u) ? 0u : 1u)) {
+        if (!t384_mini2_build_tpd_parameters_query_command(tx, (selected & 1u) ? 0u : 1u)) 
+        {
             fail(BAD_ID, now); return;
         }
     } else if (phase>=STATE_GAIN && phase<=STATE_GAIN_AFTER) {

@@ -22,15 +22,30 @@
 #include "t384_calibration_storage.h"
 #include "t384_module_files.h"
 #include "t384_module_files_http.h"
+#include "t384_v5f_net_memory.h"
 
+#if T384_NETWORK_ON_V5F
+/* Two sockets are enough for the image page plus /diag and keep the V5F
+ * network-side control state inside the dedicated DTCM window. */
+#define HTTP_CLIENTS 2u
+#define HTTP_REQUEST_BYTES 2432u
+#define HTTP_DIAG_BYTES 8192u
+#else
 #define HTTP_CLIENTS 3u
+#define HTTP_REQUEST_BYTES 4096u
+#define HTTP_DIAG_BYTES 8192u
+#endif
 #define HTTP_POLL_INTERVAL 4u
 #define HTTP_IDLE_POLL_LIMIT 5u
 #define HTTP_RAW16_WRITE_BUDGET 16u
 #define HTTP_STATIC_WRITE_BUDGET 16u
-#define HTTP_RAW16_STALL_TIMEOUT_MS 10000u
+#define HTTP_RAW16_STALL_TIMEOUT_MS 5000u
 #define HTTP_RAW16_TARGET_BPS 4915200u
 #define HTTP_IDLE_PIPELINE_DRAIN_BUDGET 32u
+/* Keep the proven COPY path enabled.  The experimental single-slot no-copy
+ * path serialized the 640 stream behind one ACK and is disabled until an
+ * outstanding-slot queue replaces it. */
+#define T384_RAW16_NO_COPY 0
 
 typedef struct {
     struct tcp_pcb *pcb;
@@ -41,7 +56,7 @@ typedef struct {
     bool raw16_blocked;
     bool module_download;
     uint32_t module_download_started;
-    const char *static_data;
+    const uint8_t *static_data;
     size_t static_length;
     size_t static_offset;
     u16_t static_inflight;
@@ -50,12 +65,15 @@ typedef struct {
     uint32_t raw16_last_progress_ms;
     bool raw16_chunk_leased;
     bool raw16_synced;
+    bool raw16_payload_queued;
     t384_frame_chunk_view_t raw16_chunk;
     size_t raw16_wire_header_offset;
     size_t raw16_payload_offset;
+    uint32_t raw16_copy_unacked;
+    uint32_t raw16_nocopy_unacked;
     uint8_t raw16_wire_header[T384_RAW16_WIRE_HEADER_BYTES];
     char header[512];
-    uint8_t request[4096];
+    uint8_t request[HTTP_REQUEST_BYTES];
     size_t request_length;
 } http_client_t;
 
@@ -73,10 +91,10 @@ typedef struct {
     uint32_t payload_bps;
 } raw16_stream_stats_t;
 
-static http_client_t clients[HTTP_CLIENTS];
+static http_client_t clients[HTTP_CLIENTS] T384_NET_HTTP_STORAGE;
 static struct tcp_pcb *http_listener;
 static http_client_t *raw16_client;
-static raw16_stream_stats_t raw16_stats;
+static raw16_stream_stats_t raw16_stats T384_NET_HTTP_STORAGE;
 static uint32_t raw16_rate_started_ms;
 static uint32_t raw16_rate_frames;
 static uint32_t raw16_rate_bytes;
@@ -84,13 +102,25 @@ static uint32_t http_accept_rejects;
 /* Keep the complete diagnostic body inside one bounded response. The WCH
  * formatter must not hit its truncation boundary while expanding the many
  * numeric counters below. */
-static char diag_response[8192 + (T384_DUALCORE ? 256 : 0)];
+static char diag_response[HTTP_DIAG_BYTES + (T384_DUALCORE ? 256 : 0)]
+    T384_NET_HTTP_STORAGE;
 /* The storage API caps payloads at 2 KiB; leave 256 B for HTTP headers. */
-static char calibration_response[T384_CAL_STORAGE_MAX_PAYLOAD + 256u];
+static char calibration_response[T384_CAL_STORAGE_MAX_PAYLOAD + 256u]
+    T384_NET_HTTP_STORAGE;
 
+#if T384_NETWORK_ON_V5F
+/* The full console is compressed for the V5F 128 KiB image window. The
+ * response includes its HTTP header and is transparently decompressed by
+ * browsers while the MCU keeps the source page out of RAM_CODE. */
+static const uint8_t status_response[]
+    __attribute__((section(".t384_http_rodata"), aligned(4))) = {
+#include "device_console_http_gz.inc"
+};
+#else
 static const char status_response[] =
 #include "device_console_html.inc"
 ;
+#endif
 
 static const char not_found_response[] =
     "HTTP/1.0 404 Not Found\r\n"
@@ -223,6 +253,7 @@ static size_t build_diag_response(void)
 
     APPEND_DIAG(
         "pipeline=raw16-source-pipeline-v1\n"
+        "network.data_plane=%s\n"
         "source.kind=%s\n"
         "source.synthetic=%lu\n"
         "source.target_bps=%lu\n"
@@ -294,6 +325,7 @@ static size_t build_diag_response(void)
         "mini2.pn=%s\n"
         "mini2.sn_valid=%lu\n"
         "mini2.sn=%s\n",
+        T384_NETWORK_ON_V5F ? "v5f" : "v3f",
         t384_frame_source_name(),
         (unsigned long)source.synthetic,
         (unsigned long)source.target_bps,
@@ -722,6 +754,54 @@ static size_t build_diag_response(void)
     memcpy(diag_response, header, (size_t)header_length);
     return (size_t)header_length + (size_t)body_length;
 }
+
+/* A no-copy payload remains owned by the pipeline until the peer ACKs every
+ * byte.  The force path is used only while tearing down a dead TCP PCB. */
+static void release_raw16_chunk(http_client_t *client, bool force)
+{
+    if (client == NULL || !client->raw16_chunk_leased) return;
+#if T384_RAW16_NO_COPY
+    if (!force && (!client->raw16_payload_queued ||
+                   client->raw16_copy_unacked != 0u ||
+                   client->raw16_nocopy_unacked != 0u)) {
+        return;
+    }
+#else
+    (void)force;
+#endif
+    const bool frame_end =
+        (client->raw16_chunk.flags & T384_CHUNK_FLAG_FRAME_END) != 0u;
+    t384_frame_pipeline_release();
+    client->raw16_chunk_leased = false;
+    client->raw16_payload_queued = false;
+    client->raw16_payload_offset = 0u;
+    client->raw16_copy_unacked = 0u;
+    client->raw16_nocopy_unacked = 0u;
+    if (frame_end && !force) {
+        ++raw16_stats.frames;
+        ++raw16_rate_frames;
+    }
+}
+
+#if T384_RAW16_NO_COPY
+static void account_raw16_ack(http_client_t *client, u16_t length)
+{
+    uint32_t acked = length;
+    if (client->raw16_copy_unacked >= acked) {
+        client->raw16_copy_unacked -= acked;
+        return;
+    }
+    acked -= client->raw16_copy_unacked;
+    client->raw16_copy_unacked = 0u;
+    if (client->raw16_nocopy_unacked >= acked) {
+        client->raw16_nocopy_unacked -= acked;
+    } else {
+        client->raw16_nocopy_unacked = 0u;
+    }
+    release_raw16_chunk(client, false);
+}
+#endif
+
 static void release_client(http_client_t *client)
 {
     if (client == NULL) {
@@ -732,10 +812,7 @@ static void release_client(http_client_t *client)
                               client->static_inflight == 0u;
         t384_module_files_download_release(complete);
     }
-    if (client->raw16_chunk_leased) {
-        t384_frame_pipeline_release();
-        client->raw16_chunk_leased = false;
-    }
+    release_raw16_chunk(client, true);
     if (raw16_client == client) {
         raw16_client = NULL;
         ++raw16_stats.disconnects;
@@ -747,7 +824,13 @@ static void release_client(http_client_t *client)
 
 static void abort_client(http_client_t *client)
 {
-    if (client == NULL || client->pcb == NULL) {
+    if (client == NULL) {
+        return;
+    }
+    if (client->pcb == NULL) {
+        /* The PCB is already gone (for example after an asynchronous error);
+         * there are no TCP pbufs left to drain, so finish the lease cleanup. */
+        release_client(client);
         return;
     }
     struct tcp_pcb *pcb = client->pcb;
@@ -756,8 +839,11 @@ static void abort_client(http_client_t *client)
     tcp_sent(pcb, NULL);
     tcp_poll(pcb, NULL, 0u);
     tcp_err(pcb, NULL);
-    release_client(client);
+    /* tcp_abort() frees unacked/unsent pbufs.  Keep a no-copy pipeline slot
+     * leased until that happens; releasing it first would let the producer
+     * overwrite memory still referenced by lwIP. */
     tcp_abort(pcb);
+    release_client(client);
 }
 
 static void http_error(void *arg, err_t error)
@@ -770,6 +856,12 @@ static err_t close_client(http_client_t *client)
 {
     if (client == NULL || client->pcb == NULL) {
         return ERR_OK;
+    }
+    if (client->raw16_response) {
+        /* A RAW16 response may still have no-copy pbufs on either TCP queue;
+         * graceful close would release the slot before their ACK/cleanup. */
+        abort_client(client);
+        return ERR_ABRT;
     }
     struct tcp_pcb *pcb = client->pcb;
     void *callback_arg = pcb->callback_arg;
@@ -844,10 +936,10 @@ static err_t queue_static_chunk(http_client_t *client)
 }
 
 static err_t send_static_response(http_client_t *client,
-                                  const char *response, size_t length)
+                                  const void *response, size_t length)
 {
     client->static_response = true;
-    client->static_data = response;
+    client->static_data = (const uint8_t *)response;
     client->static_length = length;
     client->static_offset = 0u;
     client->static_inflight = 0u;
@@ -889,7 +981,7 @@ static bool lease_next_raw16_chunk(http_client_t *client)
         client->raw16_synced = true;
 #if T384_PIPELINE_PACKED_PICTURE
         /* The ring already holds a lossless 32-byte UV prefix and 2560 Y
-         * bytes per slot. The consumer lease lasts through tcp_write(COPY). */
+         * bytes per slot. V5F no-copy keeps the lease until tcp_sent ACK. */
         chunk.frame_offset = (chunk.frame_offset / T384_PIPELINE_CHUNK_BYTES) *
                              T384_PIPELINE_STORAGE_CHUNK_BYTES;
         chunk.length = T384_PIPELINE_STORAGE_CHUNK_BYTES;
@@ -897,8 +989,11 @@ static bool lease_next_raw16_chunk(http_client_t *client)
 #endif
         client->raw16_chunk = chunk;
         client->raw16_chunk_leased = true;
+        client->raw16_payload_queued = false;
         client->raw16_wire_header_offset = 0u;
         client->raw16_payload_offset = 0u;
+        client->raw16_copy_unacked = 0u;
+        client->raw16_nocopy_unacked = 0u;
         t384_raw16_wire_encode(client->raw16_wire_header, &chunk);
         return true;
     }
@@ -925,6 +1020,15 @@ static err_t queue_raw16_data(http_client_t *client)
             !lease_next_raw16_chunk(client)) {
             break;
         }
+#if T384_RAW16_NO_COPY
+        /* The payload pointer remains owned by the pipeline until the ACK
+         * callback drains raw16_nocopy_unacked.  Do not issue a zero-length
+         * tcp_write while waiting for that callback, and do not advance to a
+         * second slot before the current slot is released. */
+        if (client->raw16_payload_queued) {
+            break;
+        }
+#endif
         if (client->raw16_chunk_leased &&
             (client->raw16_chunk.data == NULL ||
              client->raw16_chunk.length == 0u ||
@@ -961,8 +1065,10 @@ static err_t queue_raw16_data(http_client_t *client)
         }
         const u16_t chunk = (u16_t)chunk_size;
 
+        const uint8_t write_flags =
+            payload && T384_RAW16_NO_COPY ? 0u : TCP_WRITE_FLAG_COPY;
         const err_t write_error = tcp_write(client->pcb, data, chunk,
-                                            TCP_WRITE_FLAG_COPY);
+                                            write_flags);
         if (write_error == ERR_MEM) {
             if (!client->raw16_blocked) {
                 ++raw16_stats.backpressure;
@@ -981,24 +1087,28 @@ static err_t queue_raw16_data(http_client_t *client)
         client->raw16_blocked = false;
         client->raw16_last_progress_ms = t384_millis();
         if (payload) {
+#if T384_RAW16_NO_COPY
+            client->raw16_nocopy_unacked += chunk;
+#else
+            /* COPY has already detached the source buffer from TCP. */
+#endif
             client->raw16_payload_offset += chunk;
             raw16_stats.bytes += chunk;
             raw16_rate_bytes += chunk;
             if (client->raw16_payload_offset == client->raw16_chunk.length) {
-                const bool frame_end =
-                    (client->raw16_chunk.flags & T384_CHUNK_FLAG_FRAME_END) != 0u;
-                t384_frame_pipeline_release();
-                client->raw16_chunk_leased = false;
-                client->raw16_payload_offset = 0u;
-                if (frame_end) {
-                    ++raw16_stats.frames;
-                    ++raw16_rate_frames;
-                }
+#if T384_RAW16_NO_COPY
+                client->raw16_payload_queued = true;
+                release_raw16_chunk(client, false);
+#else
+                release_raw16_chunk(client, false);
+#endif
             }
         } else if (client->header_offset < client->header_length) {
             client->header_offset += chunk;
+            client->raw16_copy_unacked += chunk;
         } else {
             client->raw16_wire_header_offset += chunk;
+            client->raw16_copy_unacked += chunk;
         }
     }
 
@@ -1032,6 +1142,9 @@ static err_t http_sent(void *arg, struct tcp_pcb *pcb, u16_t length)
         return close_client(client);
     }
     if (client->raw16_response) {
+#if T384_RAW16_NO_COPY
+        account_raw16_ack(client, length);
+#endif
         client->raw16_last_progress_ms = t384_millis();
         return queue_raw16_data(client);
     }
@@ -1153,8 +1266,7 @@ static err_t send_raw16_stream(http_client_t *client)
         T384_RAW16_WIRE_VERSION, T384_RAW16_WIRE_HEADER_BYTES,
         T384_PIPELINE_STORAGE_CHUNK_BYTES, T384_RAW16_WIDTH, T384_RAW16_HEIGHT,
         (unsigned long)(T384_PIPELINE_PACKED_PICTURE
-            ? T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES
-            : T384_RAW16_FRAME_BYTES));
+            ? T384_PIPELINE_PACKED_FRAME_BYTES : T384_RAW16_FRAME_BYTES));
     if (header_length <= 0 ||
         (size_t)header_length >= sizeof(client->header)) {
         return send_and_close(client, not_found_response,
@@ -1166,8 +1278,11 @@ static err_t send_raw16_stream(http_client_t *client)
     client->raw16_response = true;
     client->raw16_chunk_leased = false;
     client->raw16_synced = false;
+    client->raw16_payload_queued = false;
     client->raw16_wire_header_offset = 0u;
     client->raw16_payload_offset = 0u;
+    client->raw16_copy_unacked = 0u;
+    client->raw16_nocopy_unacked = 0u;
     client->raw16_last_progress_ms = t384_millis();
     raw16_client = client;
     ++raw16_stats.connects;
@@ -1463,10 +1578,17 @@ static err_t handle_module_request(http_client_t *client)
 }
 
 static err_t http_receive(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
-                          err_t error)
+    err_t error)
 {
     http_client_t *client = (http_client_t *)arg;
     if (p == NULL) {
+        /* A streaming peer may close while lwIP still owns a no-copy payload
+         * pbuf.  Abort first so those pbufs are freed before the pipeline
+         * lease is returned; ordinary HTTP responses keep graceful close. */
+        if (client->raw16_response) {
+            abort_client(client);
+            return ERR_ABRT;
+        }
         return close_client(client);
     }
     if (error != ERR_OK) {
@@ -1546,7 +1668,11 @@ static err_t http_receive(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
         return send_raw16_stream(client);
     } else if (request_matches_path(request, request_copy, "/")) {
         return send_static_response(client, status_response,
+#if T384_NETWORK_ON_V5F
+                                    sizeof(status_response));
+#else
                                     sizeof(status_response) - 1u);
+#endif
     }
     return send_and_close(client, not_found_response,
                           sizeof(not_found_response) - 1u);
@@ -1641,12 +1767,16 @@ void t384_http_status_task(void)
         }
         return;
     }
+
     if (client == NULL || client->pcb == NULL || client->closing) {
+        abort_client(client);
         return;
     }
-    if (client->raw16_blocked &&
-        (uint32_t)(now - client->raw16_last_progress_ms) >=
-            HTTP_RAW16_STALL_TIMEOUT_MS) {
+    /* Any RAW16 connection that makes no write progress is stale, even if
+     * lwIP has not yet marked its PCB dead. This also covers a peer/browser
+     * that stopped reading while the PCB remains nominally alive. */
+    if ((uint32_t)(now - client->raw16_last_progress_ms) >=
+        HTTP_RAW16_STALL_TIMEOUT_MS) {
         ++raw16_stats.timeout_disconnects;
         abort_client(client);
         return;

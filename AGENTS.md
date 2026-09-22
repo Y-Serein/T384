@@ -189,6 +189,7 @@ MRS 工程的 `.wvsln/.wvproj/.project/.cproject` 必须使用相对 linked fold
 - 原地解压 `web.zip` 或把其内容当成主线源码。
 - 改变通信协议、文件/表格式、硬件接口、电平、VID/PID 或 USB 类别。
 - 生成生产固件、烧录、擦除或操作真实设备。
+- 运行任何编译/构建命令。包括但不限于主机 `gcc` 语法检查与 smoke 测试编译、MRS/WCH xPack 工具链目标编译；`tools/check_raw16_bench.sh`、`tools/check_ncm_firmware.sh` 内嵌的 gcc 编译，以及 `tools/build_dualcore.ps1`、`make` 等构建命令。所有编译与构建一律由用户在 Windows / MRS 完成；代理只做只读分析与逻辑验证，不执行任何编译/构建动作。
 - 启动长期服务或把本地服务暴露到局域网。
 
 ## 10. 完成与沉淀

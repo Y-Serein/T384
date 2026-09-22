@@ -68,8 +68,7 @@ void t384_raw16_wire_encode(uint8_t output[T384_RAW16_WIRE_HEADER_BYTES],
     put_le32(output + 8u, chunk->frame_sequence);
     put_le32(output + 12u, chunk->frame_offset);
     put_le32(output + 16u, T384_PIPELINE_PACKED_PICTURE
-        ? T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES
-        : T384_RAW16_FRAME_BYTES);
+        ? T384_PIPELINE_PACKED_FRAME_BYTES : T384_RAW16_FRAME_BYTES);
     put_le32(output + 20u, chunk->capture_ms);
     put_le16(output + 24u, chunk->length);
     put_le16(output + 26u, T384_RAW16_WIDTH);

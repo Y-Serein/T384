@@ -106,12 +106,6 @@
 					"${project}/Platform/main.c",
 					"${project}/Common/Ld/V3F",
 					"${project}/Startup/startup_ch32h417_v3f.S",
-					"${project}/ThirdParty",
-					"${project}/Common/USB",
-					"${project}/Common/App/http_status.c",
-					"${project}/Common/App/t384_ncm.c",
-					"${project}/Common/Raw16/t384_module_files_http.c",
-					"${project}/Common/Raw16/t384_calibration_storage.c",
 					"${project}/Common/Raw16/t384_radiometry.c",
 					"${project}/Common/Raw16/t384_frame_source_sim.c"
 				],
@@ -192,9 +186,10 @@
 						"do_not_search_system_directories": false,
 						"preprocess_only": false,
 						"defined_symbols": [
-							"Core_V5F",
-							"T384_DUALCORE=1",
-							"Run_Core=2"
+						"Core_V5F",
+						"T384_DUALCORE=1",
+						"Run_Core=2",
+						"T384_NETWORK_ON_V5F=1"
 						],
 						"undefined_symbols": []
 					},
@@ -275,8 +270,8 @@
 				},
 				"clinker": {
 					"general": {
-						"scriptFiles": [
-							"${project}/Common/Ld/V5F/Link_v5f.ld"
+					"scriptFiles": [
+						"${project}/Common/Ld/V5F/Link_v5f_net.ld"
 						],
 						"do_not_use_standard_start_files": true,
 						"do_not_use_default_libraries": false,
@@ -311,8 +306,8 @@
 				},
 				"cpplinker": {
 					"general": {
-						"scriptFiles": [
-							"${project}/Common/Ld/V5F/Link_v5f.ld"
+					"scriptFiles": [
+						"${project}/Common/Ld/V5F/Link_v5f_net.ld"
 						],
 						"do_not_use_standard_start_files": true,
 						"do_not_use_default_libraries": false,

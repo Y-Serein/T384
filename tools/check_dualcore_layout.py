@@ -32,11 +32,15 @@ for core, opposite in (("V3F", "V5F"), ("V5F", "V3F")):
     assert cfg["riscvTargetProcessor"]["atomic_extension"] is True
     assert cfg["optimization"]["other_optimization_flags"] == "-O2"
     assert set(cfg["ccompiler"]["preprocessor"]["defined_symbols"]) == {
-        f"Core_{core}", "T384_DUALCORE=1", "Run_Core=2"}
+        f"Core_{core}", "T384_DUALCORE=1", "Run_Core=2",
+        "T384_NETWORK_ON_V5F=1"}
     assert project["flashConfig"]["erase"] is False
     assert project["flashConfig"]["clearcodeflash"] is False
+    expected_link = ("Link_v5f_net.ld" if core == "V5F"
+                     else f"Link_{core.lower()}.ld")
+    assert (FW / "Common" / "Ld" / core / expected_link).is_file()
     assert cfg["clinker"]["general"]["scriptFiles"] == [
-        f"${{project}}/Common/Ld/{core}/Link_{core.lower()}.ld"]
+        f"${{project}}/Common/Ld/{core}/{expected_link}"]
     for link in project["basic"]["linkedFolders"]:
         assert link["location"].startswith("../")
         assert (folder / link["location"]).exists(), link

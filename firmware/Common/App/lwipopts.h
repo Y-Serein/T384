@@ -2,6 +2,7 @@
 #define T384_LWIPOPTS_H
 
 #include "t384_raw16.h"
+#include "t384_v5f_net_memory.h"
 
 /* ESP-IDF carries lwIP 2.2.0 with optional extensions. Keep them disabled. */
 #define ESP_LWIP 0
@@ -44,22 +45,42 @@
 #define LWIP_NETIF_LINK_CALLBACK 0
 
 #define MEM_ALIGNMENT 4
+#if T384_NETWORK_ON_V5F && defined(Core_V5F)
+/* The V5F linker gives lwIP a dedicated shared-data heap.  Keep the pool
+ * footprint bounded; the high-rate TCP path is the only workload there. */
+#define MEM_SIZE T384_V5F_LWIP_HEAP_BYTES
+#define LWIP_RAM_HEAP_POINTER t384_v5f_lwip_heap
+#define MEMP_NUM_TCP_SEG 64
+#define PBUF_POOL_SIZE 4
+#else
 #define MEM_SIZE (96u * 1024u)
+#define MEMP_NUM_TCP_SEG 96
+#define PBUF_POOL_SIZE 16
+#endif
 #define MEMP_NUM_PBUF 32
 #define MEMP_NUM_RAW_PCB 4
 #define MEMP_NUM_UDP_PCB 6
 #define MEMP_NUM_TCP_PCB 8
 #define MEMP_NUM_TCP_PCB_LISTEN 4
-#define MEMP_NUM_TCP_SEG 96
-#define PBUF_POOL_SIZE 16
 #define PBUF_POOL_BUFSIZE 1600
 
 #define TCP_MSS 1460
+#if T384_NETWORK_ON_V5F && defined(Core_V5F)
+/* V5F uses a four-buffer RX pool to preserve SRAM for the TX data plane.
+ * The image stream is device->host, so the smaller device RX window does not
+ * reduce the outgoing TCP window; it only bounds host->device control data. */
+#define TCP_WND (4 * TCP_MSS)
+#else
 #define TCP_WND (16 * TCP_MSS)
+#endif
 #if T384_RAW16_PROFILE == 640u
 /* More outstanding COPY data for the larger native picture frames. The
  * existing 96 KiB heap and 64-pbuf queue bound the allocation; no new RAM bank. */
+#if T384_NETWORK_ON_V5F && defined(Core_V5F)
+#define TCP_SND_BUF (16 * TCP_MSS)
+#else
 #define TCP_SND_BUF (32 * TCP_MSS)
+#endif
 #else
 #define TCP_SND_BUF (16 * TCP_MSS)
 #endif

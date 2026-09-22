@@ -11,6 +11,7 @@
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
 #include "t384_product_config.h"
+#include "t384_v5f_net_memory.h"
 #include "t384_dns.h"
 #include "tusb.h"
 
@@ -25,14 +26,15 @@ static const ip4_addr_t device_ip = INIT_IP4(T384_NCM_IPV4_A, T384_NCM_IPV4_B,
                                               T384_NCM_IPV4_C, T384_NCM_DEVICE_HOST);
 static const ip4_addr_t netmask = INIT_IP4(255, 255, 255, 0);
 static const ip4_addr_t no_gateway = INIT_IP4(0, 0, 0, 0);
-static struct netif ncm_netif;
+static struct netif ncm_netif T384_NET_CONTROL_STORAGE;
 static struct pbuf *received_frame;
 static uint16_t packet_filter;
 static uint32_t receive_drop_count;
 static bool network_initialized;
-static volatile t384_ncm_stats_t ncm_stats;
+static volatile t384_ncm_stats_t ncm_stats T384_NET_CONTROL_STORAGE;
 
-static dhcp_entry_t dhcp_entries[T384_NCM_CLIENT_COUNT] = {
+static dhcp_entry_t dhcp_entries[T384_NCM_CLIENT_COUNT]
+    T384_NET_CONTROL_STORAGE = {
     {{0}, INIT_IP4(T384_NCM_IPV4_A, T384_NCM_IPV4_B, T384_NCM_IPV4_C, 2), 86400},
     {{0}, INIT_IP4(T384_NCM_IPV4_A, T384_NCM_IPV4_B, T384_NCM_IPV4_C, 3), 86400},
     {{0}, INIT_IP4(T384_NCM_IPV4_A, T384_NCM_IPV4_B, T384_NCM_IPV4_C, 4), 86400},
@@ -150,6 +152,8 @@ static err_t ncm_netif_init(struct netif *netif)
 
 bool t384_ncm_init(void)
 {
+    memset((void *)&ncm_stats, 0, sizeof(ncm_stats));
+    memset(dhcp_entries, 0, sizeof(dhcp_entries));
     lwip_init();
 
     ncm_netif.hwaddr_len = sizeof(tud_network_mac_address);
