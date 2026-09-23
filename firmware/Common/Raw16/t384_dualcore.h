@@ -17,12 +17,20 @@
 #if T384_PIPELINE_STREAMING
 #if T384_PIPELINE_PACKED_PICTURE
 #if T384_NETWORK_ON_V5F
-/* In the V5F-data-plane build producer and consumer share the same 400 MHz
- * main loop. A bounded ring is sufficient; the secondary banks are reserved
- * for USB/lwIP storage instead of a full-frame backlog. */
+/* The V5F DTCM window holds the first half of the packed ring.  The second
+ * half and the ring metadata live in a reserved shared-SRAM extension; this
+ * keeps the complete 640 packed frame available without overlapping the
+ * V5F HTTP/NCM/lwIP sections. */
+#define T384_FRAME_LOCAL_SLOT_COUNT 64u
+#define T384_FRAME_SHARED_SLOT_COUNT \
+    (T384_PIPELINE_SLOT_COUNT - T384_FRAME_LOCAL_SLOT_COUNT)
 #define T384_CAPTURE_BUFFER_BYTES \
-    (T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES)
-#define T384_FRAME1_ITCM_BYTES (T384_PIPELINE_SLOT_COUNT * 16u + 32u)
+    (T384_FRAME_LOCAL_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES)
+#define T384_FRAME_SHARED_PAYLOAD_BYTES \
+    (T384_FRAME_SHARED_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES)
+#define T384_FRAME_SHARED_METADATA_BYTES \
+    (T384_PIPELINE_SLOT_COUNT * 16u + 32u)
+#define T384_FRAME1_ITCM_BYTES 32u
 #define T384_FRAME1_DTCM_BYTES 32u
 #define T384_FRAME1_CODE_BYTES 32u
 #define T384_FRAME1_DATA_BYTES 32u
@@ -97,19 +105,34 @@ extern uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES];
 extern uint8_t t384_frame1_dtcm[T384_FRAME1_DTCM_BYTES];
 extern uint8_t t384_frame1_code[T384_FRAME1_CODE_BYTES];
 extern uint8_t t384_frame1_data[T384_FRAME1_DATA_BYTES];
+#if T384_PIPELINE_PACKED_PICTURE && T384_NETWORK_ON_V5F
+extern uint8_t t384_frame_shared_payload[T384_FRAME_SHARED_PAYLOAD_BYTES];
+extern uint8_t t384_frame_shared_metadata[T384_FRAME_SHARED_METADATA_BYTES];
+#endif
 
 #if T384_PIPELINE_PACKED_PICTURE
 #include "t384_packed_picture.h"
 #if T384_NETWORK_ON_V5F
 typedef char t384_picture_region_bounds[
     T384_CAPTURE_BUFFER_BYTES ==
-        T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES &&
-    T384_FRAME1_ITCM_BYTES == T384_PIPELINE_SLOT_COUNT * 16u + 32u ? 1 : -1];
+        T384_FRAME_LOCAL_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES &&
+    T384_FRAME_SHARED_PAYLOAD_BYTES ==
+        T384_FRAME_SHARED_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES &&
+    T384_FRAME_SHARED_METADATA_BYTES == T384_PIPELINE_SLOT_COUNT * 16u + 32u ? 1 : -1];
 extern uint8_t t384_picture_expand_scratch[T384_PIPELINE_CHUNK_BYTES];
 static inline uint8_t *t384_picture_slot_data(uint32_t slot)
 {
-    return (uint8_t *)(uintptr_t)(0x200C0300u +
-        slot * T384_PIPELINE_STORAGE_CHUNK_BYTES);
+    if (slot < T384_FRAME_LOCAL_SLOT_COUNT) {
+        return t384_dualcore_frame +
+            slot * T384_PIPELINE_STORAGE_CHUNK_BYTES;
+    }
+    return t384_frame_shared_payload +
+        (slot - T384_FRAME_LOCAL_SLOT_COUNT) *
+            T384_PIPELINE_STORAGE_CHUNK_BYTES;
+}
+static inline uint8_t *t384_picture_slot_metadata(void)
+{
+    return t384_frame_shared_metadata + 32u;
 }
 static inline void t384_picture_prepare_payload(t384_frame_chunk_view_t *view)
 {
@@ -163,12 +186,16 @@ static inline uint8_t *t384_frame_bank_data(unsigned bank, uint32_t offset)
 static inline uint8_t *t384_frame_probe_region(unsigned region)
 {
 #if T384_NETWORK_ON_V5F
-    /* Secondary banks are live USB/lwIP storage in this build; keep all
-     * startup probes in the small metadata bank so the V3F handshake cannot
-     * overwrite a network buffer. */
+    /* The packed 640 ring has a shared-SRAM metadata header reserved for
+     * probes. Other V5F profiles retain the small DTCM metadata bank. */
+#if T384_PIPELINE_PACKED_PICTURE
+    return t384_frame_shared_metadata +
+        (region % T384_FRAME_PROBE_REGIONS) * 4u;
+#else
     return (uint8_t *)(uintptr_t)(0x200FB000u +
         T384_PIPELINE_SLOT_COUNT * 16u +
         (region % T384_FRAME_PROBE_REGIONS) * 4u);
+#endif
 #else
     switch (region) {
     case 0u: return t384_dualcore_frame;

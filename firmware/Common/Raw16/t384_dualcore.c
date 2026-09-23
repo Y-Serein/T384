@@ -15,6 +15,12 @@ t384_dualcore_shared_t t384_dualcore_shared
 #ifdef Core_V5F
 uint8_t t384_dualcore_frame[T384_CAPTURE_BUFFER_BYTES]
     __attribute__((section(".t384_frame"), aligned(32)));
+#if T384_NETWORK_ON_V5F && T384_PIPELINE_PACKED_PICTURE
+uint8_t t384_frame_shared_payload[T384_FRAME_SHARED_PAYLOAD_BYTES]
+    __attribute__((section(".t384_frame_shared"), aligned(32)));
+uint8_t t384_frame_shared_metadata[T384_FRAME_SHARED_METADATA_BYTES]
+    __attribute__((section(".t384_frame_shared_meta"), aligned(32)));
+#endif
 uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES]
     __attribute__((section(".t384_frame1_itcm"), aligned(32)));
 uint8_t t384_frame1_dtcm[T384_FRAME1_DTCM_BYTES]

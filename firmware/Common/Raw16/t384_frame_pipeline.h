@@ -31,12 +31,11 @@
 #endif
 #if T384_PIPELINE_STREAMING
 #if T384_RAW16_PROFILE == 640u
-/* The V3F-network baseline keeps a whole packed frame queued.  When the
- * network owner is V5F, the producer and consumer run on the same 400 MHz
- * core and only a bounded in-flight window is needed; retaining 64 slots
- * frees the secondary SRAM banks for the network stack. */
+/* A 640 packed frame is 128 storage chunks.  The V5F data-plane layout
+ * keeps the complete frame split between the local DTCM window and a shared
+ * SRAM extension so a slow client cannot force a mid-frame abort. */
 #if T384_NETWORK_ON_V5F
-#define T384_PIPELINE_SLOT_COUNT 64u
+#define T384_PIPELINE_SLOT_COUNT 128u
 #else
 #define T384_PIPELINE_SLOT_COUNT 128u
 #endif

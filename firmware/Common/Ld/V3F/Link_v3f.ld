@@ -11,7 +11,8 @@ MEMORY
 	requirements;Please refer to the datasheet manual for specific allocation*/
 	FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 184K     /* zero_wait flah ,and loaded into RAM_CODE for running */
 	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 150K  /* RAM for running code*/
-	RAM (xrw) : ORIGIN = 0x20130000+256, LENGTH = (243K+768)     /* RAM for .data .bss section and other*/
+	RAM (xrw) : ORIGIN = 0x20130000+256, LENGTH = 0x13EE0       /* leave the high shared-SRAM frame extension reserved */
+	FRAME_SHARED (xrw) : ORIGIN = 0x20143FE0, LENGTH = 0x29020  /* V5F packed 640 payload + metadata */
   	DMA_SHARED (xrw) : ORIGIN = 0x2017C000, LENGTH = 12K
     FRAME1_CODE (xrw) : ORIGIN = 0x20125800, LENGTH = 42K
     FRAME1_DATA (xrw) : ORIGIN = 0x2016D000, LENGTH = 60K
@@ -213,13 +214,16 @@ SECTIONS
     .t384_ipc (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_ipc)) } >IPC
     .t384_frame1_code (NOLOAD) : { . += LENGTH(FRAME1_CODE); } >FRAME1_CODE
     .t384_frame1_data (NOLOAD) : { . += LENGTH(FRAME1_DATA); } >FRAME1_DATA
+    .t384_frame_shared (NOLOAD) : { . += LENGTH(FRAME_SHARED); } >FRAME_SHARED
     PROVIDE(t384_dualcore_frame = 0x200C0300);
+    PROVIDE(t384_frame_shared_metadata = 0x20143FE0);
+    PROVIDE(t384_frame_shared_payload = 0x20144800);
     PROVIDE(t384_frame1_itcm = 0x200A8000);
     PROVIDE(t384_frame1_dtcm = 0x200FB000);
     PROVIDE(t384_frame1_code = 0x20125800);
     PROVIDE(t384_frame1_data = 0x2016D000);
     ASSERT(SIZEOF(.t384_ipc) <= 1024, "IPC exceeds 1 KiB")
-    ASSERT(_heap_end == 0x2016D000, "V3F heap must stop before secondary frame")
+    ASSERT(_heap_end == 0x20143FE0, "V3F heap must stop before shared packed frame")
     ASSERT(_ebss + 32768 <= ORIGIN(RAM) + LENGTH(RAM), "V3F needs 32 KiB heap margin")
 }
 

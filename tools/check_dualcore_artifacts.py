@@ -107,13 +107,17 @@ def main():
         if core == "V3F":
             if symbol(text, "t384_dualcore_frame") != 0x200C0300:
                 fail("V3F DTCM frame alias mismatch")
-            if symbol(text, "_heap_end") != 0x2016D000:
-                fail("V3F heap can overlap fixed DMA/IPC regions")
-            margin = 0x2016D000 - symbol(text, "_ebss")
+            expected_heap_end = 0x20143FE0
+            if symbol(text, "_heap_end") != expected_heap_end:
+                fail("V3F heap can overlap fixed DMA/IPC/shared-frame regions")
+            margin = expected_heap_end - symbol(text, "_ebss")
             if margin < 32768:
                 fail(f"V3F heap margin {margin} B < 32 KiB")
             if re.search(r"\.bss\.(?:slot_data|source_stats)\s+0x", text):
                 fail("V3F still owns capture payload/state")
+            if profile_id == 640 and network_on_v5f:
+                if section(text, ".t384_frame_shared") != (0x20143FE0, 0x29020):
+                    fail("V3F shared packed-frame reservation mismatch")
         else:
             if section(text, ".t384_frame") != (0x200C0300, capture_bytes):
                 fail("V5F full-frame payload placement/size mismatch")
@@ -129,9 +133,14 @@ def main():
                     fail("V5F compressed HTTP response is outside V5F Flash")
                 meta = section(text, ".t384_frame1_itcm")
                 expected_meta = (0x200FB000,
-                                 1056 if profile_id == 640 else 384)
+                                 32 if profile_id == 640 else 384)
                 if meta != expected_meta:
                     fail("bad V5F network metadata placement")
+                if profile_id == 640:
+                    if section(text, ".t384_frame_shared_meta") != (0x20143FE0, 2080):
+                        fail("bad V5F packed metadata extension placement")
+                    if section(text, ".t384_frame_shared") != (0x20144800, 165888):
+                        fail("bad V5F packed payload extension placement")
                 for name, region_start, region_end in (
                         (".t384_net_http", 0x200FB000, 0x200FF800),
                         (".t384_net_ncm", 0x20125800, 0x20130000),

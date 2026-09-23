@@ -102,7 +102,12 @@ bool t384_frame_pipeline_commit_write(uint16_t length, bool end)
 
     if (R.frame_offset == 0u) slot.flags |= T384_CHUNK_FLAG_FRAME_START;
     if (end) slot.flags |= T384_CHUNK_FLAG_FRAME_END;
+#if T384_PIPELINE_PACKED_PICTURE && T384_NETWORK_ON_V5F
+    memcpy(t384_picture_slot_metadata() + R.write_slot * sizeof(slot),
+           &slot, sizeof(slot));
+#else
     memcpy(t384_frame1_itcm + R.write_slot * sizeof(slot), &slot, sizeof(slot));
+#endif
 
     stats_begin();
     R.frame_offset += length; R.write_leased = 0u;
@@ -128,7 +133,12 @@ bool t384_frame_pipeline_peek(t384_frame_chunk_view_t *view)
     }
     R.read_slot = R.consumer_next;
     ring_slot_t slot;
+#if T384_PIPELINE_PACKED_PICTURE && T384_NETWORK_ON_V5F
+    memcpy(&slot, t384_picture_slot_metadata() + R.read_slot * sizeof(slot),
+           sizeof(slot));
+#else
     memcpy(&slot, t384_frame1_itcm + R.read_slot * sizeof(slot), sizeof(slot));
+#endif
 #if T384_PIPELINE_PACKED_PICTURE
     if (slot.length != T384_PIPELINE_CHUNK_BYTES ||
         (slot.flags & T384_CHUNK_FLAG_DATA_MODE_MASK) != T384_CHUNK_FLAG_PICTURE_UYVY) {
