@@ -1,31 +1,77 @@
-# T384/T640 当前交接（2026-09-22）
+# T384/T640 当前交接（2026-10-08）
 
-## 30 秒恢复
+## 30 秒恢复 / 当前状态
 
-**当前 384/640 共用 V5F 数据面：V5F 负责 MINI2/DVP、TCP/lwIP、TinyUSB NCM、HTTP；V3F 只保留启动、跨核握手、状态/RPC。640 已在真实板上恢复 COPY 流并观察到约 28 FPS；384 的共用 V5F 构建刚完成源码兼容调整，尚未由 MRS 编译/烧录验证。**
+**640 两点实验标定已完成真实采集、板端 Flash 保存、回读与运行时加载；用户最后确认“确实可以了，我已经验证过了，其他验证晚点跑”。当前收束，不自动继续提速、重采标定或追加验证。**
 
-- 正式工程 `firmware/T384-RAW16-BENCH.wvsln`，当前网络数据面配置为 V5F、默认 profile 640；[预览](http://192.168.17.1/)和[诊断](http://192.168.17.1/diag)地址保持不变。V2 帧协议、NCM 描述符、IP 和浏览器接口未改；根页面在 V5F 版改为 gzip Flash 响应以满足 128 KiB 代码窗口。
-- 640 v2 每帧线上 331776 B，保留原 8-bit 亮度和块内 U/V；网页还原 UYVY，TCP/IP 校验保留。理论 30/60 FPS 需 9.95/19.91 MB/s 像素载荷，另有协议开销。先前 UYVY 成功窗口约 8.53 FPS、5.59 MB/s；v2 约 20 FPS、6.6 MB/s，但窗口断连。
-- 旧镜像最后可复核现场记录（`docs/logs.txt`，2026-09-20）：15.036 s 内 295 完整帧，19.619 FPS，6.509 MB/s；这些数字只用于迁移前基线。
-- 最新 `out/stability/640-throughput-latest.json`（2026-09-20 09:47:53 +08 开始）仍记录 12.425 s 后 WinError 10054、`stable=false`、断连后 `/diag` 超时；序号缺口 494，半帧/逆序 0。该文件和上面 17:58–18:03 记录来自旧板上镜像，不能证明当前源码或新产物已上板。
-- 新架构关键内存：640 packed ring 64 槽（165888 B）或 384 non-packed ring 24 槽（147456 B）；V5F 网络 heap 32 KiB；NCM/USB 缓冲放共享 SRAM；HTTP/diag 状态放 V5F DTCM；网页 gzip 响应放 V5F Flash-only 段。V5F `TCP_WND=4*MSS` 是为 4 个 RX pbuf 的 lwIP sanity 约束，图像发送方向不变。
-- `T384_NETWORK_ON_V5F` 现覆盖 384/640；384 使用非打包 RAW16 ring，640 使用 packed Picture ring，共用 V5F 网络 heap/NCM/HTTP linker 布局。256 仍未纳入本轮共用数据面验证。
-- 2026-09-22 首份日志的 `stream.connects=0` 根因是 V5F NOLOAD 网络 heap 中的模块状态未清零，已加入 `t384_module_files_init()`；随后新日志已证明流能建立（`connects=1`、`frames=6`），但浏览器断开。进一步发现 64 槽迁移把 ring 容量误报成 packed 逻辑帧大小（165888 vs 331776），已修正 wire/HTTP `Frame-Bytes` 并加入 5 秒无进展清理，尚未再次 Build/烧录验证。
-- 用户负责 Windows/MRS/下载/上板测试；本轮代理未运行目标编译、未烧录、未 commit/push。工作区仍有用户既有未提交改动；不 reset/覆盖。
+- 当前模组 `TIFSC640 / FW 01.00.01.03`；默认 `T384_RAW16_PROFILE=640u`、`T384_640_Y16_STREAM_ENABLED=1u`。V5F 采集+网络，V3F 启动/跨核控制，Y16 布局用 IPC v7。持续 mode 1，DMA 原始小端→线上 Y16BE，640×512 / 655360 B，V1 分块；不再是旧 packed Picture/V2，也不再执行 2 秒后恢复的探测。
+- 用户原生 Windows 10 秒：188 完整帧、18.736 FPS、12.279 MB/s，序号缺口 409，partial/order=0。并发 `/diag` 有一次 WinError 10054，报告整体 `stable=false`；完整帧项通过不等于网络稳定性通过。
+- 本次 0°C/50°C 各 30 帧，ROI 均值 16768.112 / 23930.790。板端实际参数：`T=(Y16-16768)/143.26`；`stored=true`、`applied=true`、A 槽、calibration_id=1791429824、generation=890820278。generation 从已备份旧 384 包的 890820277 递增，不因数值大就判为新故障。
+- **编译、构建、产物检查、烧录及上板验证全部由用户负责。代理不运行编译，也不再安排“先让我检查新 map 再烧录”的中间步骤。** 代理负责源码、日志、静态逻辑与必要资源同步；不自动提交/push。
+- 用户已要求将本 session 源码和交接一起提交；以包含本节的提交为当前归档基线。`9a7e07b` 只是旧 Picture 基线，不代表当前 Y16/标定实现。未 push；后续仍先看工作区差异，不要 reset 或覆盖。
+- 既有网页外观改版保留在工作区，未混入本次标定提交；提交只包含640温度支持及对应的页面资源。网页源与两份include存在未提交外观差异时，不要回滚用户布局。
+- 入口：[成像](http://192.168.17.1/) / [诊断](http://192.168.17.1/diag)。用户说日志时完整重读 `docs/logs.txt`，不沿用本文件旧数字。
 
 ## 已尝试及结果
 
-1. 640 SRAM 无损打包 v6 保留；本轮把现有 2592 B/块直接作为 HTTP v2 载荷，网页和主机抓流工具同步识别，实测稳定窗口约 19.619 FPS，仍未达到 30 FPS。
-2. 先前只加 NCM TX 诊断的改动曾伴随上板回归，确切原因未证实；该 TinyUSB 诊断代码已撤回，本轮不再动 TinyUSB、USB 描述符、IP 或 TX 时序。
-3. 抓流脚本现会在异常时保存 `partial_window` 和尝试断连后诊断；最新断连后的诊断请求超时，保留了 12.425 s 的完整帧统计。
-4. USBHS `/diag` 的失败尝试仍不作为证据；当前源码未新增 USBHS 硬件字段，但保留了 TinyUSB NCM 的只读 `xmit_ntb_*` 统计。现有 V3F bin/Merge 含这些字符串，V5F map/HEX 仍旧，必须先双核重建。
+1. 最初本地日志是 WN2384 接 640 profile 的旧快照；用户纠正今天使用当前 640，后续实机只读探针确认 TIFSC640，不能再把旧日志当今日接线。已取得高档 NUC-T 32768 B/16384 项、Vtemp/FFC/快门状态；gain 仍 unknown，明确按实验模型处理。
+2. 临时 mode 1 探测已实机通过：2 秒 119 个物理完整帧、坏帧/FIFO=0；小端 ROI 标准差 3.36 count、大端 860.99；恢复 mode 0 后 Picture 3 帧通过。SDK 的 WN2/TIF 中间流接口是 mode0=Picture/mode1=TPD；旧 V0.4 表的同号命令另用 IR/KBC 枚举，不能混套。
+3. 完整 Y16 使用 110×5120=563200 B（550 KiB）四段队列：`0x200C0300/220160`、`0x20144800/163840`、`0x20104000/133120`、`0x20138800/46080`；metadata `0x20143FE0/2080`。回收 V3F 未用代码/堆预留，V3F 代码须在 `0x20104000` 前，堆底线 32 KiB，堆上界 `0x20138800`。允许整帧跳过，不能把半帧交给标定；队列不是一整帧静态缓存。
+4. 新 map 曾暴露代理引入的链接错误：在 `.stack` 内定义含字面地址的条件 `_heap_end` 被加上栈基址，得到 `0x402B8000`。已移到输出段外并用 `ABSOLUTE(...)`，增加精确地址断言。不要删除断言或继续使用错误上界；新构建/下载由用户处理。
+5. 所有规格已共用一组 Flash A/B 槽：偏移 `0x50000/0x52000`，物理地址 `0x08050000/0x08052000`，总预留 16 KiB。每槽预留 8 KiB 擦除页、逻辑槽 4 KiB、payload 上限 2 KiB。现两点包 112 B 头+16 B 参数。384 地址/格式保留；旧640/256分区不自动迁移或擦除。
+6. `calibrate_t640_blackbody.py` 已支持默认采集、`--apply`、`--apply-from REPORT`、`--verify-saved REPORT`；保存前核对当前身份/源格式/共享槽和应用接口，重新核验原帧，备份旧包；保存后比对整包回读和运行时参数。固件/网页支持匹配 profile 的 Y16 实验模型，Picture 不显示温度，OEM 始终 false。384 原入口与拟合/保存规则保留；动态 applied 标志不再触发“持久数据被修改”的假报错。
+
+## 下一步（用户选择后再做）
+
+1. 从用户下一次指定的问题开始；已确认可用的 0/50 标定不重复采集，不擅自修改公式或继续吞吐优化。
+2. 用户要验证精度时，再做未参与拟合点、预热/FFC/机芯温漂、不同条件；范围和误差目标按当次要求确定，不自动追加强制门槛。
+3. 用户要查稳定性时，单独定位并发诊断的 WinError 10054，再按需求做重连/长时/多平台；不要用它否定已取得的完整帧或已保存模型。
+4. 如重用报告，只需 `--apply-from` 或 `--verify-saved`，不要重新采样、反复写 Flash；同一板重新标定会更新公共 A/B 中的当前模型，不同时保存多个 SKU 的独立活动模型。
+
+## 关键相对路径
+
+- `docs/logs.txt`：最后真实采集/应用日志；`docs/runbooks/PROJECT_MEMORY.md`：本次偏好与经验；`docs/runbooks/skills/t384-session-closure/SKILL.md`：按路径复用的工作法。
+- `out/radiometry/blackbody/20261008T032318.276198Z/report.json`：本次拟合；同目录 `low/`、`high/`：原始帧和状态；`apply-20261008T032344.157613Z/{result.json,model.packet,before.packet}`：保存与旧包备份。
+- `out/radiometry/t640-probe/20261008-093101-777/`：只读表/状态；`out/radiometry/t640-mode-probe/20261008-100333-673/`：mode 探测；`out/radiometry/t640-y16-stream/20261008-103148-397/stream.json`：10 秒流及诊断失败证据。
+- `tools/calibrate_t640_blackbody.py`、`tools/t640_calibration_apply.py`、`tools/calibration_storage_client.py`：640采集/保存/回读；`tools/calibrate_t384_blackbody.py`：原384入口。
+- `firmware/Common/Raw16/{t384_calibration_storage.h,t384_calibration_storage.c,t384_raw16.h,t384_dualcore.h,t384_dualcore.c,t384_frame_pipeline_full.c,t384_frame_source_mini2.c}`；`firmware/Common/App/http_status.c`；两核 `firmware/Common/Ld/`。
+- `web/raw16_bench_console.html`、`tools/embed_device_console.py`、`firmware/Common/App/device_console_{html,http_gz}.inc`：页面及两份同步资源。
+
+## 验证状态 / 未决问题
+
+- 用户完成构建/烧录/实机，最终确认可用。保存时的 `result.json` 仍有 `cold_boot_verified=false`，它是保存当时快照，不能用来覆盖后续用户确认；用户未提供新回读文件，勿编造细项。其他验证已明确延期。
+- 代理实际做过日志/JSON/二进制读取、CRC/SHA与参数独立核对、旧384包兼容核对、`git diff --check`、`bash -n`、Python AST/导入/CLI help、JS/PowerShell语法解析、HTML/gzip资源一致性检查。没有运行 C 编译、完整 smoke、烧录或黑体操作；新夹具已写但未由代理执行。
+- 一次只读产物检查曾正确检出错误堆上界，随后用户明确收回代理介入编译/产物/烧录流程，今后遵守新分工。
+- 尚不能称 OEM/全温区/全画面精度通过：gain未知、逐帧FFC/Vtemp/epoch绑定及OEM算法未闭环；独立精度、长期稳定性、多平台等按用户后续安排。
+- 384 地址、格式与流程兼容已核对，但不把静态核对写成本 session 的384重新上板验收。源码、HANDOFF、memory和skill按用户要求同批提交；未push，原始采集数据保留在本地out目录。
+
+---
+
+# 历史交接（2026-09-24；下方旧地址、架构、吞吐与待办不是当前状态）
+
+## 30 秒恢复
+
+**当前源码基线是提交 `9a7e07b`（640 packed ring 扩展到完整 331,776B，共享 SRAM 跨区布局）。用户已重新 Build/烧录并验证手机约 20 FPS；最新诊断确认完整帧不再中止。Windows 约 28 FPS仍是历史现场基线，手机长时稳定性尚未完成。**
+
+- 正式工程：`firmware/T384-RAW16-BENCH.wvsln`；V5F 负责 MINI2/DVP、TCP/lwIP、TinyUSB NCM、HTTP，V3F 负责启动/跨核控制。设备入口仍是[预览](http://192.168.17.1/)和[诊断](http://192.168.17.1/diag)。本轮没有改 NCM 描述符、IP 或帧协议。
+- 有效基线：用户现场确认 v6/COPY Windows 约 28 FPS，历史最好约 29 FPS；本轮手机已能出图，用户反馈约 20 FPS。
+- 最新手机诊断：`source.fps_x1000=60039`、`pipeline.slot_count=128`、`pipeline.storage_capacity_bytes=331776`、`pipeline.frames_completed=591`、`pipeline.frames_aborted=0`、`ncm.tx_drop=0`、`stream.frames=114`、`stream.write_errors=0`。[docs/logs.txt](/home/slam/Sipeed/T384/docs/logs.txt:1)
+- `source.dropped_frames=311`、`pipeline.acquire_no_slot=312` 是慢客户端下的整帧边界跳过，不是半帧发布；当前关键正确性指标是 `frames_aborted=0`、`protocol_errors=0`。
+- 旧 adaptive2 和 HTTP“丢旧 chunk”实验仍只作失败证据，不能恢复；网页 watchdog 改动未保留。
+
+## 已尝试及结果
+
+1. 之前手机无帧的根因是 64 槽 packed ring 只有 165,888B，小于 331,776B 完整 packed 帧；手机背压时出现大量 mid-frame abort。
+2. `9a7e07b` 将 640 ring 扩为 128 槽：V5F DTCM 保留前 64 槽，共享 SRAM 扩展区放后 64 槽和 2,080B metadata；V3F heap 边界同步前移。
+3. 用户重新烧录后最新日志确认 `frames_completed=591`、`frames_aborted=0`；手机已出图。慢客户端仍会在整帧边界跳过帧，不再发送半帧。
+4. 不恢复 adaptive2 或 HTTP 丢旧 chunk；不能删除 TCP checksum、帧头 CRC 或直接释放未协调的 chunk。
 
 ## 下一步
 
-1. 以 `T384_RAW16_PROFILE=640u` 和 `384u` 分别在 MRS 打开 `firmware/T384-RAW16-BENCH.wvsln`，每档先 Build V3F、再 Build V5F；核对 V5F `highcode<=128 KiB`、`.t384_frame`、`.t384_net_ncm/.t384_net_heap/.t384_net_http` 均未越界，Merge 同时包含两核。**禁止 Erase All / Clear CodeFlash**。
-2. 下载后先打开[诊断页](http://192.168.17.1/diag)，确认 `network.data_plane=v5f`；再开[预览页](http://192.168.17.1/)，确认页面能加载、图像和 diag 同时可用。
-3. 只测一个 20 秒窗口：记录完整帧 FPS、`pipeline.acquire_no_slot`、`ncm.xmit_ntb_*`、`tcp.sndbuf`、USBHS 复位/错误；新架构若不枚举或无图，先回退工程配置到提交基线，不改协议。
-4. 30 FPS 仍需真实板验证；手机、其他 PC、长时稳定性和正式测温未验证。
+1. 用同一镜像分别做 Windows 60 秒和手机 60 秒/10 分钟严格抓流；记录完整帧、序号缺口、partial、`frames_aborted`、`acquire_no_slot`、NCM drop 和背压。
+2. 确认 `pipeline.slot_count=128`、`storage_capacity_bytes=331776` 在后续烧录镜像中持续存在；不要沿用旧 map/旧 Merge。
+3. 通过标准：手机在其可消费速率下持续完整帧，partial/sequence error 为 0，`frames_aborted=0`，NCM TX drop/error 为 0；Windows 约 28 FPS 基线不回退。
+4. 384、正式测温、长时稳定性、多平台和 30 FPS/25 FPS 统一验收仍未完成。
 
 ## 关键相对路径
 
@@ -37,7 +83,7 @@
 
 ## 验证状态与未决问题
 
-本轮只做源码/工程/内存布局修改；已做 JSON/XML 读回、gzip 资产完整性核对和 `git diff --check`，未运行 WCH 目标编译、未烧录、未上板。新 map/HEX/Merge、V5F 代码窗口、网络 SRAM 余量、USBHS 枚举、完整帧 FPS 和重连均未验证。
+本轮用户已在 MRS 完成 Build/Merge/烧录并提供最新手机诊断；代理未运行目标构建或烧录。源码提交为 `9a7e07b`。静态布局检查和 map 结果已核对：V5F local frame `0x200C0300/0x28800`，shared metadata `0x20143FE0/0x820`，shared payload `0x20144800/0x28800`，V3F `_heap_end=0x20143FE0`。正式 60 秒/10 分钟、多平台、正式测温仍未验证。`/home/slam/Sipeed/C_context/KNOWN_FAILURES.md` 当前不存在。
 
 ---
 

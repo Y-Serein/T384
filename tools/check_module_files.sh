@@ -2,13 +2,16 @@
 set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 result_dir="$(mktemp -d /tmp/t384-module-files.XXXXXX)"
-gcc -std=gnu99 -Wall -Wextra -Werror -DCore_V3F \
+for profile in 256u 384u 640u; do
+gcc -std=gnu99 -Wall -Wextra -Werror -DCore_V3F -DT384_RAW16_PROFILE="$profile" \
   -I"$project_root/tests/fixtures/calibration_flash" \
   -I"$project_root/firmware/Common/Raw16" \
+  -I"$project_root/firmware/Common/App" \
   "$project_root/tests/calibration_flash_smoke.c" \
   "$project_root/firmware/Common/Raw16/t384_calibration_storage.c" \
   -o "$result_dir/calibration-flash-smoke"
 "$result_dir/calibration-flash-smoke"
+done
 gcc -std=gnu99 -Wall -Wextra -Werror -DT384_HOST_SYNTAX_CHECK \
   -I"$project_root/firmware/Common/Raw16" -I"$project_root/firmware/Common/App" \
   "$project_root/tests/module_files_smoke.c" \
@@ -25,7 +28,7 @@ gcc -shared -fPIC -std=gnu99 -Wall -Wextra -Werror \
   -o "$result_dir/protocol.so"
 python3 "$project_root/tests/mini2_file_sdk_vectors.py" "$result_dir/protocol.so"
 python3 "$project_root/tests/mini2_video_sdk_vectors.py" "$result_dir/protocol.so"
-gcc -std=gnu99 -Wall -Wextra -Werror -Wno-comment -DT384_HOST_SYNTAX_CHECK -DCore_V3F \
+gcc -std=gnu99 -Wall -Wextra -Werror -Wno-comment -DT384_HOST_SYNTAX_CHECK -DCore_V3F -DT384_RAW16_PROFILE=384u \
   -ffunction-sections -fdata-sections \
   -I"$project_root/firmware/V3F/User" \
   -I"$project_root/firmware/Common/Debug" \
@@ -43,7 +46,10 @@ gcc -std=gnu99 -Wall -Wextra -Werror -Wno-comment -DT384_HOST_SYNTAX_CHECK -DCor
   "$project_root/firmware/Common/Raw16/t384_raw16.c" \
   -Wl,--gc-sections -o "$result_dir/http-smoke"
 for scenario in {0..6}; do "$result_dir/http-smoke" "$scenario"; done
-gcc -std=gnu99 -Wall -Wextra -Werror -Wno-comment -DT384_HOST_SYNTAX_CHECK -DCore_V3F \
+for calibration_profile in 384u 640u; do
+calibration_flags=(-DT384_RAW16_PROFILE="$calibration_profile")
+if [[ "$calibration_profile" == 640u ]]; then calibration_flags+=(-DT384_DUALCORE=1); fi
+gcc -std=gnu99 -Wall -Wextra -Werror -Wno-comment -DT384_HOST_SYNTAX_CHECK -DCore_V3F "${calibration_flags[@]}" \
   -ffunction-sections -fdata-sections \
   -I"$project_root/firmware/V3F/User" \
   -I"$project_root/firmware/Common/Debug" \
@@ -58,12 +64,15 @@ gcc -std=gnu99 -Wall -Wextra -Werror -Wno-comment -DT384_HOST_SYNTAX_CHECK -DCor
   "$project_root/firmware/Common/Raw16/t384_module_files_http.c" \
   "$project_root/firmware/Common/Raw16/t384_mini2_protocol.c" \
   "$project_root/firmware/Common/Raw16/t384_frame_pipeline.c" \
+  "$project_root/firmware/Common/Raw16/t384_frame_pipeline_full.c" \
   "$project_root/firmware/Common/Raw16/t384_raw16_wire.c" \
   "$project_root/firmware/Common/Raw16/t384_raw16.c" \
   -Wl,--gc-sections -o "$result_dir/calibration-http-smoke"
 "$result_dir/calibration-http-smoke"
+done
 python3 "$project_root/tests/module_files_host_smoke.py"
 python3 "$project_root/tests/calibration_storage_host_smoke.py"
+python3 "$project_root/tests/t640_calibration_apply_smoke.py"
 python3 "$project_root/tests/calibration_capture_smoke.py"
 python3 "$project_root/tools/read_mini2_module_files.py" --help >/dev/null
 echo "MINI2 read-only file host checks passed; no hardware was accessed"

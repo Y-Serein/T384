@@ -10,8 +10,15 @@ MEMORY
 	/*FLASH, RAM, and RAM-CODE can be freely configured according to project 
 	requirements;Please refer to the datasheet manual for specific allocation*/
 	FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 184K     /* zero_wait flah ,and loaded into RAM_CODE for running */
+	/* Nonvolatile calibration slots; never place code or merge-image data here. */
+	CAL_STORAGE (rx) : ORIGIN = 0x00050000, LENGTH = 16K
 	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 150K  /* RAM for running code*/
 	RAM (xrw) : ORIGIN = 0x20130000+256, LENGTH = 0x13EE0       /* leave the high shared-SRAM frame extension reserved */
+	/* Optional 640 Y16 ring segments.  They overlap only otherwise-unused
+	 * RAM_CODE/RAM capacity; assertions below prevent live V3F sections from
+	 * entering these windows when the corresponding NOLOAD arrays exist. */
+	FRAME_EXTRA_CODE (xrw) : ORIGIN = 0x20104000, LENGTH = 0x20800
+	FRAME_EXTRA_DATA (xrw) : ORIGIN = 0x20138800, LENGTH = 0x0B400
 	FRAME_SHARED (xrw) : ORIGIN = 0x20143FE0, LENGTH = 0x29020  /* V5F packed 640 payload + metadata */
   	DMA_SHARED (xrw) : ORIGIN = 0x2017C000, LENGTH = 12K
     FRAME1_CODE (xrw) : ORIGIN = 0x20125800, LENGTH = 42K
@@ -202,7 +209,6 @@ SECTIONS
 
     .stack ORIGIN(STACK_RAM) :
     {
-        PROVIDE( _heap_end = ORIGIN(RAM) + LENGTH(RAM) );    
         . = ALIGN(4);
         PROVIDE(_susrstack = . );
         . = . + __stack_size;
@@ -214,7 +220,14 @@ SECTIONS
     .t384_ipc (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_ipc)) } >IPC
     .t384_frame1_code (NOLOAD) : { . += LENGTH(FRAME1_CODE); } >FRAME1_CODE
     .t384_frame1_data (NOLOAD) : { . += LENGTH(FRAME1_DATA); } >FRAME1_DATA
+    .t384_frame_extra_code (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame_extra_code)) } >FRAME_EXTRA_CODE
+    .t384_frame_extra_data (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame_extra_data)) } >FRAME_EXTRA_DATA
     .t384_frame_shared (NOLOAD) : { . += LENGTH(FRAME_SHARED); } >FRAME_SHARED
+    /* Keep this outside an output section and explicitly absolute: a
+     * section-relative ternary inside .stack adds the stack VMA to the
+     * literal address (observed 0x402B8000 instead of 0x20138800). */
+    PROVIDE(_heap_end = ABSOLUTE(SIZEOF(.t384_frame_extra_data) > 0
+        ? ORIGIN(FRAME_EXTRA_DATA) : ORIGIN(RAM) + LENGTH(RAM)));
     PROVIDE(t384_dualcore_frame = 0x200C0300);
     PROVIDE(t384_frame_shared_metadata = 0x20143FE0);
     PROVIDE(t384_frame_shared_payload = 0x20144800);
@@ -223,8 +236,11 @@ SECTIONS
     PROVIDE(t384_frame1_code = 0x20125800);
     PROVIDE(t384_frame1_data = 0x2016D000);
     ASSERT(SIZEOF(.t384_ipc) <= 1024, "IPC exceeds 1 KiB")
-    ASSERT(_heap_end == 0x20143FE0, "V3F heap must stop before shared packed frame")
-    ASSERT(_ebss + 32768 <= ORIGIN(RAM) + LENGTH(RAM), "V3F needs 32 KiB heap margin")
+    ASSERT(_heap_end == (SIZEOF(.t384_frame_extra_data) > 0 ? 0x20138800 : 0x20143FE0), "V3F heap end must be an absolute SRAM address")
+    ASSERT(SIZEOF(.t384_frame_extra_code) == 0 || _highcode_vma_end <= 0x20104000, "V3F code overlaps Y16 frame extension")
+    ASSERT(SIZEOF(.t384_frame_extra_code) == 0 || _highcode_vma_end1 <= 0x20104000, "V3F code tail overlaps Y16 frame extension")
+    ASSERT(SIZEOF(.t384_frame_extra_data) == 0 || _ebss + 32768 <= 0x20138800, "V3F needs 32 KiB heap margin before Y16 frame extension")
+    ASSERT(_ebss + 32768 <= _heap_end, "V3F needs 32 KiB heap margin")
 }
 
 

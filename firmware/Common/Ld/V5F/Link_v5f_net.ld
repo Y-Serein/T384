@@ -10,11 +10,17 @@ MEMORY
 	/*FLASH, RAM, and RAM-CODE can be freely configured according to project 
 	requirements;Please refer to the datasheet manual for specific allocation*/
 	FLASH (rx) : ORIGIN = 0x00030000, LENGTH = 128K             /* zero_wait flah ,and loaded into RAM_CODE for running */
+	/* Nonvolatile calibration slots; never place code or merge-image data here. */
+	CAL_STORAGE (rx) : ORIGIN = 0x00050000, LENGTH = 16K
 	RAM_CODE (xrw) : ORIGIN = 0x200A0000, LENGTH = 128K         /* V5F network/data-plane code */
     RAM (xrw) : ORIGIN = 0x200F6300, LENGTH = (19K+256)  /*DTCM RAM for .data .bss section and other*/
    	FRAME (xrw) : ORIGIN = 0x200C0300, LENGTH = 216K
     /* 640 packed ring extension in V3F shared SRAM. V3F reserves the same
      * range from its heap; V5F accesses it through the shared SRAM map. */
+    /* Optional raw-Y16 ring segments in V3F's otherwise-unused code/RAM
+     * windows. The V3F linker reserves matching NOLOAD sections. */
+    FRAME_EXTRA_CODE (xrw) : ORIGIN = 0x20104000, LENGTH = 0x20800
+    FRAME_EXTRA_DATA (xrw) : ORIGIN = 0x20138800, LENGTH = 0x0B400
     FRAME_SHARED (xrw) : ORIGIN = 0x20143FE0, LENGTH = 0x29020
     DMA_SHARED (xrw) : ORIGIN = 0x2017C000, LENGTH = 12K
     /* The old ITCM window is consumed by the enlarged V5F code bank.  The
@@ -231,6 +237,8 @@ SECTIONS
     .t384_frame (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame)) } >FRAME
     .t384_frame_shared_meta (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame_shared_meta)) } >FRAME_SHARED
     .t384_frame_shared (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame_shared)) } >FRAME_SHARED
+    .t384_frame_extra_code (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame_extra_code)) } >FRAME_EXTRA_CODE
+    .t384_frame_extra_data (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame_extra_data)) } >FRAME_EXTRA_DATA
     .t384_frame1_itcm (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame1_itcm)) } >FRAME1_DTCM
     .t384_net_http (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_net_http*)) } >FRAME1_DTCM
     .t384_frame1_dtcm (NOLOAD) : { . = ALIGN(32); KEEP(*(.t384_frame1_dtcm)) } >FRAME1_DTCM
@@ -253,19 +261,28 @@ SECTIONS
     ASSERT(SIZEOF(.t384_net_heap) <= LENGTH(FRAME1_DATA), "V5F lwIP storage exceeds shared-data bank")
     ASSERT(_start == 0x30000, "V5F wake address must match entry")
     /* 640 packed ring: 165888 B local + 165888 B shared extension;
+     * optional 640 Y16 ring: 220160 B local + four shared segments;
      * 384 non-packed ring remains 147456 B. */
-    ASSERT(SIZEOF(.t384_frame) == 165888 ||
+    ASSERT(SIZEOF(.t384_frame) == 220160 ||
+           SIZEOF(.t384_frame) == 165888 ||
            SIZEOF(.t384_frame) == 147456,
            "V5F network capture buffer size")
     ASSERT(SIZEOF(.t384_frame_shared_meta) == 2080 ||
            SIZEOF(.t384_frame_shared_meta) == 0,
            "V5F packed metadata size")
-    ASSERT(SIZEOF(.t384_frame_shared) == 165888 ||
+    ASSERT(SIZEOF(.t384_frame_shared) == 163840 ||
+           SIZEOF(.t384_frame_shared) == 165888 ||
            SIZEOF(.t384_frame_shared) == 0,
            "V5F packed shared payload size")
     ASSERT(SIZEOF(.t384_frame_shared_meta) +
            SIZEOF(.t384_frame_shared) <= LENGTH(FRAME_SHARED),
            "V5F packed shared frame exceeds shared SRAM extension")
+    ASSERT(SIZEOF(.t384_frame_extra_code) == 133120 ||
+           SIZEOF(.t384_frame_extra_code) == 0,
+           "V5F Y16 code-window frame extension size")
+    ASSERT(SIZEOF(.t384_frame_extra_data) == 46080 ||
+           SIZEOF(.t384_frame_extra_data) == 0,
+           "V5F Y16 data-window frame extension size")
     ASSERT(SIZEOF(.t384_ipc) <= 1024, "IPC exceeds 1 KiB")
     ASSERT(_ebss + 8192 <= _heap_end, "V5F needs 8 KiB heap margin")
 }

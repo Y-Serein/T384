@@ -120,7 +120,7 @@ def read_capture(directory: Path,width: int | None=None,height: int | None=None,
     manifest=manifest_data if manifest_data is not None else json.loads((directory/"manifest.json").read_text(encoding="utf-8"))
     if manifest.get("format")!="t384-radiometry-capture-v1": raise ValueError("unknown capture format")
     geometry=manifest["geometry"]; w,h=geometry["width"],geometry["height"]
-    if (w,h) not in ((256,192),(384,288)) or geometry["frame_bytes"]!=w*h*2:
+    if (w,h) not in ((256,192),(384,288),(640,512)) or geometry["frame_bytes"]!=w*h*2:
         raise ValueError("unsupported capture geometry")
     if (width is not None and width!=w) or (height is not None and height!=h):
         raise ValueError("requested geometry differs from capture")

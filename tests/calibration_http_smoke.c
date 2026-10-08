@@ -2,18 +2,44 @@
 #ifndef T384_RAW16_PROFILE
 #define T384_RAW16_PROFILE 384u
 #endif
+#if T384_RAW16_PROFILE == 640u
+#define TEST_PROFILE "640x512"
+#else
+#define TEST_PROFILE "384x288"
+#endif
 #define main calibration_storage_fixture_main
 #include "t384_calibration_storage_smoke.c"
 #undef main
 #define T384_HTTP_FIXTURE_NO_MAIN
 #include "module_files_http_smoke.c"
 
+#if T384_DUALCORE
+/* Link the same four-region ring as the 640 image; this fixture only drives
+ * storage HTTP, so no hardware capture or fixed-address scratch is used. */
+t384_dualcore_shared_t t384_dualcore_shared;
+uint8_t t384_dualcore_frame[T384_CAPTURE_BUFFER_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame1_dtcm[T384_FRAME1_DTCM_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame1_code[T384_FRAME1_CODE_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame1_data[T384_FRAME1_DATA_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame_shared_payload[T384_FRAME_SHARED_PAYLOAD_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame_shared_metadata[T384_FRAME_SHARED_METADATA_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame_extra_code[T384_FRAME_EXTRA_CODE_BYTES] __attribute__((aligned(32)));
+uint8_t t384_frame_extra_data[T384_FRAME_EXTRA_DATA_BYTES] __attribute__((aligned(32)));
+void t384_dualcore_init(void) { memset(&t384_dualcore_shared, 0, sizeof(t384_dualcore_shared)); }
+#endif
+
+static bool fixture_source_ready = true;
+static uint16_t fixture_pixel_format = T384_FRAME_PIXEL_FORMAT_Y16_BE;
+bool t384_frame_source_stream_ready(void) { return fixture_source_ready; }
+uint16_t t384_frame_source_pixel_format(void) { return fixture_pixel_format; }
+
 int main(void)
 {
     assert(calibration_storage_fixture_main() == 0);
     t384_cal_manifest_t manifest;
     assert(t384_cal_storage_manifest(&manifest) == T384_CAL_OK);
-    strcpy(manifest.profile, "384x288");
+    strcpy(manifest.profile, TEST_PROFILE);
     manifest.payload_len = T384_CAL_STORAGE_MAX_PAYLOAD;
     uint8_t payload[T384_CAL_STORAGE_MAX_PAYLOAD];
     for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (uint8_t)(i * 17u);
@@ -38,6 +64,19 @@ int main(void)
     get_temp_model_config(&config);
     assert(strcmp(config.model, T384_CAL_MODEL_EMPIRICAL_2POINT) == 0);
     assert(config.zero_c_x100 == 2967000ul && config.counts_per_c_x100 == 9460ul);
+    struct tcp_pcb runtime_pcb = {0};
+    client_request(&clients[0], &runtime_pcb, "GET /api/v1/calibration/v1/status HTTP/1.1\r\n\r\n");
+    assert(handle_calibration_request(&clients[0]) == ERR_OK);
+    transmitted[transmitted_length] = 0;
+    assert(strstr((const char *)transmitted, "\"runtime_model_available\":true") != NULL);
+    assert(strstr((const char *)transmitted, "\"runtime_model\":\"t384-empirical-2point-v1\"") != NULL);
+    assert(strstr((const char *)transmitted, "\"runtime_counts_per_c_x100\":9460") != NULL);
+    fixture_pixel_format = T384_FRAME_PIXEL_FORMAT_UYVY;
+    client_request(&clients[0], &runtime_pcb, "GET /api/v1/calibration/v1/status HTTP/1.1\r\n\r\n");
+    assert(handle_calibration_request(&clients[0]) == ERR_OK);
+    transmitted[transmitted_length] = 0;
+    assert(strstr((const char *)transmitted, "\"runtime_model_available\":false") != NULL);
+    fixture_pixel_format = T384_FRAME_PIXEL_FORMAT_Y16_BE;
     assert(t384_cal_storage_init() == T384_CAL_OK);
     get_temp_model_config(&config);
     assert(config.zero_c_x100 == 2967000ul && config.counts_per_c_x100 == 9460ul);
@@ -53,6 +92,15 @@ int main(void)
     packet[sizeof(packet)-1u]^=1u;
     assert(storage_put_packet(packet,sizeof(packet))==T384_CAL_CRC);
     assert(t384_cal_storage_init()==T384_CAL_OK);
+
+    /* Current-profile isolation rejects a valid package from the other SKU. */
+    t384_cal_manifest_t wrong_profile = manifest;
+    strcpy(wrong_profile.profile,
+           T384_RAW16_PROFILE == 640u ? "384x288" : "640x512");
+    seal_manifest(&wrong_profile, payload);
+    memcpy(packet, &wrong_profile, sizeof(wrong_profile));
+    memcpy(packet + sizeof(wrong_profile), payload, sizeof(payload));
+    assert(storage_put_packet(packet, sizeof(packet)) == T384_CAL_FORMAT);
 
     struct tcp_pcb pcb = {0};
     http_client_t *client = &clients[0];
@@ -105,7 +153,7 @@ int main(void)
     ack_all(client);
     transmitted[transmitted_length] = 0;
     assert(memcmp(transmitted, "HTTP/1.0 200", 12u) == 0);
-    assert(strstr((const char *)transmitted, "\"profile\":\"384x288\"") != NULL);
+    assert(strstr((const char *)transmitted, "\"profile\":\"" TEST_PROFILE "\"") != NULL);
     assert(strstr((const char *)transmitted, "\"payload_len\":2048") != NULL);
     assert(strstr((const char *)transmitted, "\"applied\":false") != NULL);
     assert(strstr((const char *)transmitted, "\"oem_radiometry_ready\":false") != NULL);

@@ -1,5 +1,6 @@
 #include "t384_calibration_storage.h"
 #include "t384_v5f_net_memory.h"
+#include <stdbool.h>
 #include <string.h>
 
 #if (defined(Core_V3F) || \
@@ -10,6 +11,12 @@
 #endif
 
 typedef char t384_cal_slot_size_check[(sizeof(t384_cal_manifest_t) < T384_CAL_STORAGE_SLOT_SIZE) ? 1 : -1];
+typedef char t384_cal_slot_alignment_check[
+    ((T384_CAL_STORAGE_SLOT0_ADDR & 0x1FFFu) == 0u &&
+     (T384_CAL_STORAGE_SLOT1_ADDR & 0x1FFFu) == 0u) ? 1 : -1];
+typedef char t384_cal_reserved_range_check[
+    (T384_CAL_STORAGE_SLOT1_ADDR + 0x2000u <=
+     T384_CAL_STORAGE_RESERVED_END) ? 1 : -1];
 
 #define SLOT_COUNT 2u
 static t384_cal_manifest_t g_active T384_NET_CONTROL_STORAGE;
@@ -22,6 +29,11 @@ static uint8_t g_written[T384_CAL_STORAGE_MAX_PAYLOAD / 8u]
     T384_NET_CONTROL_STORAGE;
 static uint32_t g_written_count;
 static unsigned g_active_slot;
+/* This flag intentionally remains in normal .bss.  The other storage
+ * scratch objects are in a NOLOAD network section; after a reset their stale
+ * bytes must never make the boot scan return BUSY before it reads Flash. */
+static uint8_t g_runtime_initialized;
+static t384_cal_status_t g_init_status = T384_CAL_NO_VALID;
 
 #if defined(T384_CAL_USE_WCH_FLASH)
 static int flash_range_valid(uint32_t a, size_t n)
@@ -49,22 +61,18 @@ __attribute__((weak)) int t384_cal_flash_erase(uint32_t a, size_t n)
     (void)a; (void)n; return -1;
 #else
     if (!flash_range_valid(a,n) || (a % 0x1000u) != 0u || (n % 0x1000u) != 0u) return -1;
-    /* WCH FLASH_ErasePage masks addresses to 8 KiB in dual Flash mode
-     * (FLASH_CFGR0 bit 28). The two slots only share an erase page if they
-     * sit in the same 8 KiB block; writing one would then destroy the other,
-     * so refuse only in that combined case. */
-    if ((*(volatile uint32_t *)(uintptr_t)FLASH_CFGR0_BASE & (1u<<28)) != 0u &&
-        (T384_CAL_STORAGE_SLOT0_ADDR & 0xFFFFE000u) ==
-        (T384_CAL_STORAGE_SLOT1_ADDR & 0xFFFFE000u)) return -1;
-    FLASH_Unlock();
-    for (size_t off = 0u; off < n; off += 0x1000u) {
-        if (FLASH_ErasePage(FLASH_BASE + a + (uint32_t)off) != FLASH_COMPLETE) {
-            FLASH_Lock();
-            return -1;
-        }
+    /* Use WCH's documented ROM erase wrapper.  In dual-flash mode a logical
+     * 4 KiB slot occupies an 8 KiB physical erase page; calling the raw page
+     * helper with a 4 KiB length made the requested granularity implicit and
+     * left persistence dependent on the current DBMODE setting. */
+    const bool dual_flash =
+        (*(volatile uint32_t *)(uintptr_t)FLASH_CFGR0_BASE & (1u << 28)) != 0u;
+    if (dual_flash && ((a & 0x1FFFu) != 0u || n != T384_CAL_STORAGE_SLOT_SIZE)) {
+        return -1;
     }
-    FLASH_Lock();
-    return 0;
+    const uint32_t physical_length = dual_flash ? 0x2000u : (uint32_t)n;
+    return FLASH_ROM_ERASE(FLASH_BASE + a, physical_length) == FLASH_COMPLETE
+        ? 0 : -1;
 #endif
 }
 __attribute__((weak)) int t384_cal_flash_write(uint32_t a, const void *s, size_t n)
@@ -118,7 +126,18 @@ static uint32_t slot_addr(unsigned i) { return i ? T384_CAL_STORAGE_SLOT1_ADDR :
 
 t384_cal_status_t t384_cal_storage_init(void)
 {
-    if (g_staging_valid) return T384_CAL_BUSY;
+    if (!g_runtime_initialized) {
+        g_runtime_initialized = 1u;
+        g_staging_valid = 0u;
+        g_written_count = 0u;
+        g_active_slot = 0u;
+        memset(g_written, 0, sizeof(g_written));
+        memset(&g_active, 0, sizeof(g_active));
+        memset(g_payload, 0, sizeof(g_payload));
+    } else if (g_staging_valid) {
+        g_init_status = T384_CAL_BUSY;
+        return g_init_status;
+    }
     /* Boot-time scratch reuses the idle staging buffer instead of a 2 KiB
      * local array, which alone would exhaust the V3F stack budget. */
     t384_cal_manifest_t best, m; int found=0;
@@ -134,8 +153,28 @@ t384_cal_status_t t384_cal_storage_init(void)
             g_active_slot=i; found=1;
         }
     }
-    if (!found) { memset(&g_active,0,sizeof(g_active)); return T384_CAL_NO_VALID; }
-    g_active=best; return T384_CAL_OK;
+    if (!found) {
+        memset(&g_active, 0, sizeof(g_active));
+        memset(g_payload, 0, sizeof(g_payload));
+        g_init_status = T384_CAL_NO_VALID;
+        return g_init_status;
+    }
+    g_active=best;
+    g_init_status = T384_CAL_OK;
+    return g_init_status;
+}
+
+t384_cal_status_t t384_cal_storage_init_status(void)
+{
+    return g_init_status;
+}
+
+uint8_t t384_cal_storage_active_slot(void)
+{
+    if (g_init_status != T384_CAL_OK || !valid_manifest(&g_active)) {
+        return 0xFFu;
+    }
+    return (uint8_t)g_active_slot;
 }
 
 t384_cal_status_t t384_cal_storage_begin(const t384_cal_manifest_t *m)
@@ -205,7 +244,9 @@ t384_cal_status_t t384_cal_storage_finish(void)
         flash_matches(a,&g_staging.magic,4u)!=0) goto failed;
     g_active=g_staging; g_active_slot=slot;
     memcpy(g_payload,g_staging_payload,g_staging.payload_len);
-    g_staging_valid=0; return T384_CAL_OK;
+    g_staging_valid=0;
+    g_init_status=T384_CAL_OK;
+    return T384_CAL_OK;
 failed:
     g_staging_valid=0; return T384_CAL_FLASH;
 }

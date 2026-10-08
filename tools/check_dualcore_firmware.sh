@@ -26,9 +26,43 @@ for profile in 256u 384u 640u; do
     firmware/Common/Raw16/t384_module_files.c
   if [[ "$profile" == 640u ]]; then
     gcc "${flags[@]}" -DT384_RAW16_PROFILE=640u -DCore_V3F \
+      -DT384_640_Y16_STREAM_ENABLED=0u \
       tests/mini2_640_sram_frame_smoke.c firmware/Common/Raw16/t384_frame_pipeline_full.c \
       -o /tmp/t384_640_sram_frame_smoke
     /tmp/t384_640_sram_frame_smoke
+    gcc "${flags[@]}" -DT384_RAW16_PROFILE=640u -DCore_V5F \
+      -DT384_640_MODE_PROBE_ENABLED=1u \
+      -DT384_640_Y16_STREAM_ENABLED=0u \
+      -ffunction-sections -fdata-sections \
+      tests/mini2_640_mode_probe_smoke.c \
+      firmware/Common/Raw16/t384_frame_pipeline_full.c \
+      firmware/Common/Raw16/t384_raw16_roi.c \
+      firmware/Common/Raw16/t384_mini2_protocol.c \
+      -Wl,--gc-sections -o /tmp/t384_640_mode_probe_smoke
+    /tmp/t384_640_mode_probe_smoke
+    gcc "${flags[@]}" -DT384_RAW16_PROFILE=640u -DCore_V5F \
+      tests/mini2_640_y16_ring_smoke.c \
+      firmware/Common/Raw16/t384_frame_pipeline_full.c \
+      firmware/Common/Raw16/t384_raw16.c \
+      firmware/Common/Raw16/t384_raw16_wire.c \
+      -o /tmp/t384_640_y16_ring_smoke
+    /tmp/t384_640_y16_ring_smoke
+    gcc "${flags[@]}" -DT384_RAW16_PROFILE=640u -DCore_V5F \
+      -ffunction-sections -fdata-sections \
+      tests/mini2_640_y16_init_smoke.c \
+      firmware/Common/Raw16/t384_mini2_protocol.c \
+      -Wl,--gc-sections -o /tmp/t384_640_y16_init_smoke
+    /tmp/t384_640_y16_init_smoke
+    gcc "${flags[@]}" -DT384_RAW16_PROFILE=640u -DCore_V5F \
+      -ffunction-sections -fdata-sections \
+      tests/mini2_dvp_capture_smoke.c \
+      firmware/Common/Raw16/t384_frame_pipeline_full.c \
+      firmware/Common/Raw16/t384_raw16.c \
+      firmware/Common/Raw16/t384_raw16_roi.c \
+      firmware/Common/Raw16/t384_raw16_wire.c \
+      firmware/Common/Raw16/t384_mini2_protocol.c \
+      -Wl,--gc-sections -o /tmp/t384_640_y16_capture_smoke
+    /tmp/t384_640_y16_capture_smoke
     continue
   fi
   gcc "${flags[@]}" -DT384_RAW16_PROFILE="$profile" -DCore_V5F \

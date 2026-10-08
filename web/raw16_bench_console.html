@@ -1118,7 +1118,8 @@
         y16ZeroC = linearParameters[0] / 100;
         y16CountsPerC = linearParameters[1] / 100;
         if (!((streamWidth === 256 && streamHeight === 192) ||
-              (streamWidth === 384 && streamHeight === 288)) ||
+              (streamWidth === 384 && streamHeight === 288) ||
+              (streamWidth === 640 && streamHeight === 512)) ||
             temperatureModel === 'unavailable' || !temperatureModel ||
             linearParameters.length !== 2 || !linearParameters.every(Number.isFinite) ||
             y16CountsPerC <= 0) {

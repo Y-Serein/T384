@@ -83,7 +83,9 @@ bool t384_frame_pipeline_acquire_write(uint8_t **data, uint16_t *capacity)
     stats_begin();
     R.write_slot = R.producer_next; R.write_leased = 1u;
     stats_end();
-#if T384_PIPELINE_PACKED_PICTURE
+#if T384_PIPELINE_SHARED_STORAGE
+    *data = t384_frame_slot_data(R.write_slot);
+#elif T384_PIPELINE_PACKED_PICTURE
     *data = t384_picture_slot_data(R.write_slot);
 #else
     *data = t384_dualcore_frame + R.write_slot * T384_PIPELINE_CHUNK_BYTES;
@@ -102,8 +104,8 @@ bool t384_frame_pipeline_commit_write(uint16_t length, bool end)
 
     if (R.frame_offset == 0u) slot.flags |= T384_CHUNK_FLAG_FRAME_START;
     if (end) slot.flags |= T384_CHUNK_FLAG_FRAME_END;
-#if T384_PIPELINE_PACKED_PICTURE && T384_NETWORK_ON_V5F
-    memcpy(t384_picture_slot_metadata() + R.write_slot * sizeof(slot),
+#if T384_PIPELINE_SHARED_STORAGE
+    memcpy(t384_frame_slot_metadata() + R.write_slot * sizeof(slot),
            &slot, sizeof(slot));
 #else
     memcpy(t384_frame1_itcm + R.write_slot * sizeof(slot), &slot, sizeof(slot));
@@ -133,8 +135,8 @@ bool t384_frame_pipeline_peek(t384_frame_chunk_view_t *view)
     }
     R.read_slot = R.consumer_next;
     ring_slot_t slot;
-#if T384_PIPELINE_PACKED_PICTURE && T384_NETWORK_ON_V5F
-    memcpy(&slot, t384_picture_slot_metadata() + R.read_slot * sizeof(slot),
+#if T384_PIPELINE_SHARED_STORAGE
+    memcpy(&slot, t384_frame_slot_metadata() + R.read_slot * sizeof(slot),
            sizeof(slot));
 #else
     memcpy(&slot, t384_frame1_itcm + R.read_slot * sizeof(slot), sizeof(slot));
@@ -146,6 +148,8 @@ bool t384_frame_pipeline_peek(t384_frame_chunk_view_t *view)
         return false;
     }
     view->data = t384_picture_slot_data(R.read_slot);
+#elif T384_PIPELINE_SHARED_STORAGE
+    view->data = t384_frame_slot_data(R.read_slot);
 #else
     view->data = t384_dualcore_frame + R.read_slot * T384_PIPELINE_CHUNK_BYTES;
 #endif

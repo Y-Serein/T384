@@ -2,6 +2,14 @@
 #include <assert.h>
 #include <stdio.h>
 #include "ch32h417.h"
+/* Keep this fixture's established native-Picture no-setter baseline. The
+ * temporary 640 mode probe has its own UART/DVP state-machine fixture. */
+#ifndef T384_640_MODE_PROBE_ENABLED
+#define T384_640_MODE_PROBE_ENABLED 0u
+#endif
+#ifndef T384_640_Y16_STREAM_ENABLED
+#define T384_640_Y16_STREAM_ENABLED 0u
+#endif
 /* Discarded hardware-only functions still assemble before linker GC.  Stub
  * the vendor RISC-V fence here, never in the product interrupt code. */
 #define NVIC_DisableIRQ(irq) ((void)(irq))

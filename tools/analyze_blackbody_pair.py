@@ -38,7 +38,8 @@ def matching_conditions(a: dict,b: dict) -> None:
         if a[key]!=b[key]: raise ValueError(f"captures differ in {key}")
 
 
-def analyze_pair(low: dict,high: dict,validation: list[dict],max_error_c: float | None=None) -> dict:
+def analyze_pair(low: dict,high: dict,validation: list[dict],max_error_c: float | None=None,
+                 model_name: str = "experimental-blackbody-2point-v1") -> dict:
     matching_conditions(low,high)
     if high["setpoint_c"]<=low["setpoint_c"]: raise ValueError("high setpoint must exceed low setpoint")
     dx=high["roi_mean_y16"]-low["roi_mean_y16"]
@@ -71,7 +72,7 @@ def analyze_pair(low: dict,high: dict,validation: list[dict],max_error_c: float 
         "experimental_validation_passed":validated,"max_error_c":max_error_c,
         "oem_radiometry_ready":False,"applied":False,
         "linear_model":{"temperature_c = slope * y16 + intercept":{"slope":slope,"intercept":intercept}},
-        "candidate":dict(model="experimental-blackbody-2point-v1",slope_c_per_y16=slope,
+        "candidate":dict(model=model_name,slope_c_per_y16=slope,
                          intercept_c=intercept,valid_setpoint_range_c=[low["setpoint_c"],high["setpoint_c"]],
                          gain=low["gain"],geometry=low["geometry"],original_evidence=low["original_evidence"]),
         "notes":["All frame files, lengths, SHA and ROI were recomputed and verified.",
@@ -88,6 +89,7 @@ def main() -> int:
     parser.add_argument("--validation",type=Path,action="append",default=[])
     parser.add_argument("--max-error-c",type=float)
     parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--model",default="experimental-blackbody-2point-v1")
     parser.add_argument("--width",type=int)
     parser.add_argument("--height",type=int)
     parser.add_argument("--roi-x",type=int)
@@ -95,7 +97,8 @@ def main() -> int:
     parser.add_argument("--roi-size",type=int)
     args=parser.parse_args()
     def load(path): return load_capture(path,args.width,args.height,args.roi_x,args.roi_y,args.roi_size)
-    report=analyze_pair(load(args.low_capture),load(args.high_capture),[load(p) for p in args.validation],args.max_error_c)
+    report=analyze_pair(load(args.low_capture),load(args.high_capture),
+                        [load(p) for p in args.validation],args.max_error_c,args.model)
     with args.output.open("x",encoding="utf-8") as output:
         output.write(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
     print(json.dumps({k:report[k] for k in ("status","experimental_validation_passed","oem_radiometry_ready")},ensure_ascii=False))

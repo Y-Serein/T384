@@ -18,7 +18,7 @@ def main():
     temporary.write_bytes(binary)
     temporary.replace(target)
     print(f"Generated {target}: {len(binary)} B, both HEX offsets retained")
-    print("FF gaps include calibration slots; this tool does not preserve stored Flash data.")
+    print("Shared A/B calibration slots 0x50000-0x53FFF remain outside Merge.bin; this tool does not erase or preserve stored Flash data.")
 
 
 if __name__ == "__main__":

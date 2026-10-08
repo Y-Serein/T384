@@ -23,15 +23,22 @@ for offset in (0,20,32,client.HEADER.size, len(packet)-1):
         raise AssertionError("corrupt packet accepted")
 
 calls=[]
+manifest_reads=0
 def fake_exchange(url,method="GET",body=None):
+    global manifest_reads
     calls.append((url,method,body))
     if method=="PUT": return b'{"staged":true}'
     if method=="POST": return b'{"committed":true,"applied":false}'
-    if url.endswith("manifest"): return json.dumps(manifest).encode()
+    if url.endswith("manifest"):
+        manifest_reads += 1
+        return json.dumps(dict(manifest, applied=bool(manifest_reads % 2))).encode()
+    if url.endswith("status"):
+        return json.dumps(dict(has_valid_slot=1, generation=manifest["generation"],
+                               runtime_model_available=False)).encode()
     return payload
 client.exchange=fake_exchange
 assert client.restore("device/",packet)["identity"]==manifest["identity"]
-assert [method for _,method,_ in calls]==["PUT","POST","GET","GET","GET"]
+assert [method for _,method,_ in calls]==["PUT","POST","GET","GET","GET","GET"]
 calls.clear()
 try:
     client.restore("device/",packet[:-1])

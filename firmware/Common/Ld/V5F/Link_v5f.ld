@@ -10,6 +10,8 @@ MEMORY
 	/*FLASH, RAM, and RAM-CODE can be freely configured according to project 
 	requirements;Please refer to the datasheet manual for specific allocation*/
 	FLASH (rx) : ORIGIN = 0x00030000, LENGTH = 128K             /* zero_wait flah ,and loaded into RAM_CODE for running */
+	/* Nonvolatile calibration slots; never place code or merge-image data here. */
+	CAL_STORAGE (rx) : ORIGIN = 0x00050000, LENGTH = 16K
 	RAM_CODE (xrw) : ORIGIN = 0x200A0000, LENGTH = 32K          /*ITCM RAM for running code*/
 	RAM (xrw) : ORIGIN = 0x200F6300, LENGTH = (19K+256)  /*DTCM RAM for .data .bss section and other*/ 
    	FRAME (xrw) : ORIGIN = 0x200C0300, LENGTH = 216K
@@ -229,4 +231,3 @@ SECTIONS
     ASSERT(SIZEOF(.t384_ipc) <= 1024, "IPC exceeds 1 KiB")
     ASSERT(_ebss + 8192 <= _heap_end, "V5F needs 8 KiB heap margin")
 }
-

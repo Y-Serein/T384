@@ -75,14 +75,26 @@ def main():
                    FW / core / ".cproject", FW / core / ".kernel"]
     latest = max(inputs, key=lambda p: p.stat().st_mtime_ns)
     ipc_size, images = None, {}
-    profile = re.search(r"#define\s+T384_RAW16_PROFILE\s+(\d+)u",
-                        (FW / "Common/Raw16/t384_raw16.h").read_text())
+    raw16_header = (FW / "Common/Raw16/t384_raw16.h").read_text()
+    profile = re.search(r"#define\s+T384_RAW16_PROFILE\s+(\d+)u", raw16_header)
     profile_id = int(profile[1])
+    y16_stream = re.search(r"#define\s+T384_640_Y16_STREAM_ENABLED\s+1u",
+                           raw16_header) is not None
+    storage_header = (FW / "Common/Raw16/t384_calibration_storage.h").read_text()
+    for name, value in (
+            ("T384_CAL_STORAGE_RESERVED_END", "0x00054000u"),
+            ("T384_CAL_STORAGE_SLOT0_ADDR", "0x00050000u"),
+            ("T384_CAL_STORAGE_SLOT1_ADDR", "0x00052000u")):
+        if not re.search(rf"#define\s+{name}\s+{re.escape(value)}",
+                         storage_header):
+            fail(f"calibration Flash reservation changed: {name}")
     v5f_project = (FW / "V5F/T384-RAW16-BENCH_V5F.wvproj").read_text()
     network_on_v5f = "T384_NETWORK_ON_V5F=1" in v5f_project
     frame_bytes = {640: 655360, 384: 221184, 256: 98304}[profile_id]
     streaming = profile_id in (384, 640)
-    capture_bytes = (165888 if network_on_v5f and profile_id == 640
+    raw_640_ring = network_on_v5f and profile_id == 640 and y16_stream
+    capture_bytes = (220160 if raw_640_ring else
+                     165888 if network_on_v5f and profile_id == 640
                      else {640: 220320, 384: 147456, 256: 98304}[profile_id])
     for core, path in maps.items():
         if path.stat().st_mtime_ns < latest.stat().st_mtime_ns:
@@ -107,7 +119,7 @@ def main():
         if core == "V3F":
             if symbol(text, "t384_dualcore_frame") != 0x200C0300:
                 fail("V3F DTCM frame alias mismatch")
-            expected_heap_end = 0x20143FE0
+            expected_heap_end = 0x20138800 if raw_640_ring else 0x20143FE0
             if symbol(text, "_heap_end") != expected_heap_end:
                 fail("V3F heap can overlap fixed DMA/IPC/shared-frame regions")
             margin = expected_heap_end - symbol(text, "_ebss")
@@ -118,6 +130,16 @@ def main():
             if profile_id == 640 and network_on_v5f:
                 if section(text, ".t384_frame_shared") != (0x20143FE0, 0x29020):
                     fail("V3F shared packed-frame reservation mismatch")
+                extra_code = section(text, ".t384_frame_extra_code")
+                extra_data = section(text, ".t384_frame_extra_data")
+                expected_extra_code = (0x20104000, 133120 if raw_640_ring else 0)
+                expected_extra_data = (0x20138800, 46080 if raw_640_ring else 0)
+                if extra_code != expected_extra_code or extra_data != expected_extra_data:
+                    fail("V3F Y16 frame extension reservation mismatch")
+                if raw_640_ring and code_size > 0x4000:
+                    fail("V3F runtime code overlaps Y16 frame extension")
+                if raw_640_ring and symbol(text, "_highcode_vma_end1") > 0x20104000:
+                    fail("V3F runtime code tail overlaps Y16 frame extension")
         else:
             if section(text, ".t384_frame") != (0x200C0300, capture_bytes):
                 fail("V5F full-frame payload placement/size mismatch")
@@ -139,8 +161,15 @@ def main():
                 if profile_id == 640:
                     if section(text, ".t384_frame_shared_meta") != (0x20143FE0, 2080):
                         fail("bad V5F packed metadata extension placement")
-                    if section(text, ".t384_frame_shared") != (0x20144800, 165888):
-                        fail("bad V5F packed payload extension placement")
+                    expected_shared = (0x20144800, 163840 if raw_640_ring else 165888)
+                    if section(text, ".t384_frame_shared") != expected_shared:
+                        fail("bad V5F 640 shared payload extension placement")
+                    expected_extra_code = (0x20104000, 133120 if raw_640_ring else 0)
+                    expected_extra_data = (0x20138800, 46080 if raw_640_ring else 0)
+                    if section(text, ".t384_frame_extra_code") != expected_extra_code:
+                        fail("bad V5F Y16 code-window frame extension")
+                    if section(text, ".t384_frame_extra_data") != expected_extra_data:
+                        fail("bad V5F Y16 data-window frame extension")
                 for name, region_start, region_end in (
                         (".t384_net_http", 0x200FB000, 0x200FF800),
                         (".t384_net_ncm", 0x20125800, 0x20130000),

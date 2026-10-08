@@ -16,6 +16,18 @@ static bool irq_enabled;
 #include "t384_dualcore.h"
 t384_dualcore_shared_t t384_dualcore_shared;
 uint8_t t384_dualcore_frame[T384_CAPTURE_BUFFER_BYTES] __attribute__((aligned(32)));
+#if T384_PIPELINE_SHARED_STORAGE
+uint8_t t384_frame_shared_payload[T384_FRAME_SHARED_PAYLOAD_BYTES]
+    __attribute__((aligned(32)));
+uint8_t t384_frame_shared_metadata[T384_FRAME_SHARED_METADATA_BYTES]
+    __attribute__((aligned(32)));
+#if T384_PIPELINE_640_Y16
+uint8_t t384_frame_extra_code[T384_FRAME_EXTRA_CODE_BYTES]
+    __attribute__((aligned(32)));
+uint8_t t384_frame_extra_data[T384_FRAME_EXTRA_DATA_BYTES]
+    __attribute__((aligned(32)));
+#endif
+#endif
 uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES] __attribute__((aligned(32)));
 uint8_t t384_frame1_dtcm[T384_FRAME1_DTCM_BYTES] __attribute__((aligned(32)));
 uint8_t t384_frame1_code[T384_FRAME1_CODE_BYTES] __attribute__((aligned(32)));
@@ -168,8 +180,8 @@ static void receive_block(uint32_t index, bool with_end)
     const uint32_t sequence = source_stats.frames;
     t384_raw16_fill(sequence, index * T384_MINI2_DMA_BLOCK_BYTES,
                     dvp_row_sink[dma_bank], T384_MINI2_DMA_BLOCK_BYTES);
-#if T384_RAW16_PROFILE == 384u
-    /* Serialize the independently observed WN2384 DVP order, while the
+#if T384_MINI2_DVP_Y16_LITTLE_ENDIAN
+    /* Serialize the independently observed little-endian DVP order, while the
      * consumer above continues to demand the existing Y16BE wire values. */
     for (uint32_t i = 0u; i < T384_MINI2_DMA_BLOCK_BYTES; i += 2u) {
         const uint8_t high = dvp_row_sink[dma_bank][i];
@@ -202,7 +214,7 @@ int main(void)
         uint8_t input[T384_MINI2_DMA_BLOCK_BYTES] __attribute__((aligned(4)));
         uint8_t output[T384_MINI2_DMA_BLOCK_BYTES + 4u] __attribute__((aligned(4)));
         for (uint32_t i = 0u; i < sizeof(input); i += 4u) {
-#if T384_RAW16_PROFILE == 384u
+#if T384_MINI2_DVP_Y16_LITTLE_ENDIAN
             input[i] = 0xFFu; input[i + 1u] = 0x7Au;
             input[i + 2u] = 0x00u; input[i + 3u] = 0x7Bu;
 #else
@@ -254,7 +266,7 @@ int main(void)
                 expected_sum += t384_raw16_word(2u, y * T384_RAW16_WIDTH + x);
         assert(source_stats.roi_sum == expected_sum);
         const uint16_t prefix = t384_raw16_word(2u, 0u);
-#if T384_RAW16_PROFILE == 384u
+#if T384_MINI2_DVP_Y16_LITTLE_ENDIAN
         assert(source_stats.dvp_first_row_prefix[0] == (uint8_t)prefix);
         assert(source_stats.dvp_first_row_prefix[1] == (uint8_t)(prefix >> 8));
 #else
@@ -307,7 +319,8 @@ int main(void)
     puts("384 ring: held lease survives overflow/abort, no END, scratch exclusion");
     reset_capture();
     t384_dualcore_shared.ring.committed = t384_dualcore_shared.ring.released = UINT32_MAX - 2u;
-    t384_dualcore_shared.ring.producer_next = t384_dualcore_shared.ring.consumer_next = 23u;
+    t384_dualcore_shared.ring.producer_next =
+        t384_dualcore_shared.ring.consumer_next = T384_PIPELINE_SLOT_COUNT - 1u;
     for (unsigned frame = 0u; frame < 2u; ++frame) {
         const uint32_t sequence = frame == 0u ? UINT32_MAX : 0u;
         assert(t384_frame_pipeline_begin_frame(sequence, 0u, T384_CHUNK_FLAG_TPD_Y16));

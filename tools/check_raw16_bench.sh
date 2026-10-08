@@ -331,7 +331,7 @@ gcc -std=gnu99 -Wall -Wextra -Werror \
   -o "$radiometry_output"
 "$radiometry_output"
 
-gcc -std=gnu99 -Wall -Wextra -Werror \
+gcc -std=gnu99 -Wall -Wextra -Werror -DT384_RAW16_PROFILE=384u \
   -I"$firmware_root/Common/Raw16" \
   "$project_root/tests/t384_calibration_storage_smoke.c" \
   "$firmware_root/Common/Raw16/t384_calibration_storage.c" \

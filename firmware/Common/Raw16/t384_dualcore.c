@@ -12,10 +12,19 @@
 t384_dualcore_shared_t t384_dualcore_shared
     __attribute__((section(".t384_ipc"), aligned(32)));
 
+#if T384_PIPELINE_640_Y16
+/* Reserved at identical NOLOAD addresses in both images: V3F must never
+ * allocate code/heap here while V5F owns these two payload regions. */
+uint8_t t384_frame_extra_code[T384_FRAME_EXTRA_CODE_BYTES]
+    __attribute__((section(".t384_frame_extra_code"), aligned(32)));
+uint8_t t384_frame_extra_data[T384_FRAME_EXTRA_DATA_BYTES]
+    __attribute__((section(".t384_frame_extra_data"), aligned(32)));
+#endif
+
 #ifdef Core_V5F
 uint8_t t384_dualcore_frame[T384_CAPTURE_BUFFER_BYTES]
     __attribute__((section(".t384_frame"), aligned(32)));
-#if T384_NETWORK_ON_V5F && T384_PIPELINE_PACKED_PICTURE
+#if T384_PIPELINE_SHARED_STORAGE
 uint8_t t384_frame_shared_payload[T384_FRAME_SHARED_PAYLOAD_BYTES]
     __attribute__((section(".t384_frame_shared"), aligned(32)));
 uint8_t t384_frame_shared_metadata[T384_FRAME_SHARED_METADATA_BYTES]

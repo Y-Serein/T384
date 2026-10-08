@@ -4,12 +4,18 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "t384_raw16.h"
+
 #define T384_CAL_STORAGE_MAGIC 0x54334331u /* T3C1 */
 #define T384_CAL_STORAGE_SCHEMA 1u
 #define T384_CAL_MODEL_EMPIRICAL_2POINT "t384-empirical-2point-v1"
 #define T384_CAL_STORAGE_SLOT_SIZE 0x1000u
+/* One installed module per device: all profiles share one A/B pair.
+ * Reuse the original 384 locations; no automatic legacy-slot migration or
+ * erase occurs. Each 4 KiB logical slot reserves an 8 KiB erase page. */
 #define T384_CAL_STORAGE_SLOT0_ADDR 0x00050000u
 #define T384_CAL_STORAGE_SLOT1_ADDR 0x00052000u
+#define T384_CAL_STORAGE_RESERVED_END 0x00054000u
 #define T384_CAL_STORAGE_MAX_PAYLOAD 2048u
 #define T384_CAL_STORAGE_PROFILE_MAX 16u
 #define T384_CAL_STORAGE_ID_MAX 32u
@@ -45,6 +51,13 @@ int t384_cal_flash_erase(uint32_t address, size_t length);
 int t384_cal_flash_write(uint32_t address, const void *src, size_t length);
 
 t384_cal_status_t t384_cal_storage_init(void);
+/* Status captured by the boot-time scan.  The runtime staging buffers live in
+ * a NOLOAD section on the V5F, so callers must not infer boot state from
+ * g_staging_valid or other volatile RAM. */
+t384_cal_status_t t384_cal_storage_init_status(void);
+/* Returns the physical slot selected by the last successful scan, or 0xFF
+ * when no valid slot was published. */
+uint8_t t384_cal_storage_active_slot(void);
 /* Upload includes CRC32 of the supplied header (header_crc32 zeroed) and
  * payload. Generation is assigned locally after validation. Writes may arrive
  * in any order, but every byte must be covered before commit. Stored payloads

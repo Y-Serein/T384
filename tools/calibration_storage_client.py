@@ -86,15 +86,35 @@ def readback(base: str) -> tuple[dict, bytes]:
     before = json.loads(exchange(base + "manifest"))
     payload = exchange(base + "data")
     after = json.loads(exchange(base + "manifest"))
-    if before != after:
+    # Runtime availability can change independently of the saved packet
+    # (e.g. capture pauses). Compare all persisted header fields, not those
+    # informational flags, so the existing 384 backup path stays usable.
+    stored_fields = ("schema", "generation", "payload_len", "payload_crc32",
+                     "header_crc32", "calibration_id", "model", "profile", "identity", "gain")
+    if any(before.get(key) != after.get(key) for key in stored_fields):
         raise ValueError("calibration changed during readback; retry export")
     packet = encode_packet(before, payload)
     return decode_packet(packet)[0], packet
 
 
+def storage_status(base: str) -> dict:
+    """Read boot-scan status without requiring a valid active manifest."""
+    return json.loads(exchange(base + "status"))
+
+
 def restore(base: str, packet: bytes) -> dict:
     expected, payload = decode_packet(packet)  # no network writes before validation
-    staged = json.loads(exchange(base + "data", "PUT", packet))
+    try:
+        staged = json.loads(exchange(base + "data", "PUT", packet))
+    except RuntimeError as error:
+        # A previous interrupted PUT can leave only the volatile staging lease
+        # busy.  Abort that lease once, then retry the exact validated packet;
+        # never overwrite the active slot during this recovery.
+        detail = str(error)
+        if "HTTP 409" not in detail or "busy" not in detail:
+            raise
+        exchange(base + "abort", "POST", b"")
+        staged = json.loads(exchange(base + "data", "PUT", packet))
     if staged.get("staged") is not True:
         raise ValueError("device did not stage calibration")
     committed = json.loads(exchange(base + "commit", "POST", b""))
@@ -107,6 +127,17 @@ def restore(base: str, packet: bytes) -> dict:
             raise ValueError(f"committed calibration {key} differs from input")
     if actual_payload != payload:
         raise ValueError("committed payload differs from input")
+    try:
+        boot = storage_status(base)
+    except RuntimeError as error:
+        if "HTTP 404" in str(error):
+            raise RuntimeError(
+                "提交和立即回读已完成，但当前固件没有启动持久化状态接口；"
+                "请更新匹配的 V3F+V5F 镜像后再做断电验证"
+            ) from error
+        raise
+    if not boot.get("has_valid_slot") or boot.get("generation") != actual["generation"]:
+        raise ValueError("device boot-scan status does not match committed generation")
     return actual
 
 
@@ -119,6 +150,7 @@ def main() -> int:
     action.add_argument("--check", type=Path, help="validate a local packet without accessing hardware")
     args = parser.parse_args()
     base = args.url.rstrip("/") + BASE
+    status = None
     if args.check:
         manifest, _ = decode_packet(args.check.read_bytes())
     elif args.export:
@@ -128,10 +160,21 @@ def main() -> int:
         args.export.parent.mkdir(parents=True, exist_ok=True)
         with args.export.open("xb") as output:
             output.write(packet)
+        try:
+            status = storage_status(base)
+        except RuntimeError as error:
+            # Export remains useful against the pre-status endpoint firmware;
+            # preserve the packet and report the missing diagnostic separately.
+            status = {"unavailable": str(error)}
     else:
         manifest = restore(base, args.restore.read_bytes())
-    print(json.dumps({"stored_manifest": manifest, "applied": False,
-                      "oem_radiometry_ready": False}, ensure_ascii=False, indent=2))
+        status = storage_status(base)
+    result = {"stored_manifest": manifest,
+              "applied": bool(status and status.get("runtime_model_available") is True),
+              "oem_radiometry_ready": False}
+    if status is not None:
+        result["storage_status"] = status
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

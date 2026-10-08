@@ -83,11 +83,13 @@ V3F堆余35144B、V5F16556B。固定链接窗口和代码/堆/栈边界未重分
 分别列出重叠NOLOAD共享预留，不能将两核bss简单相加当物理占用。每次改动都须
 重查map/HEX入口、运行代码容量、四段地址/大小、堆边界及Merge.bin一致性。
 
-Flash仍为V3F184KiB、标定槽0x2E000/0x2F000、V5F起点0x30000/128KiB。
+Flash仍为V3F184KiB、V5F起点0x30000/128KiB；当前所有 profile 共用
+0x50000/0x52000 两个标定槽，预留至0x54000，共16KiB。
+每个4KiB逻辑槽独占一个8KiB物理擦除页；旧384地址保持兼容，旧640/256分区不自动迁移。
 2026-09-18标定保存保护：v1上传须校验header/payload CRC；跟踪每字节覆盖，
 只向另一物理槽写入，payload/header读回后最后发布magic。禁止活动流/读表期间上传提交，
-WCH双Flash的8KiB擦除模式会使两槽共页，检测后拒绝擦除。小包保存成功仍applied=false，
-不把存储当正式测温；384的索引/数据域/同帧状态及运行时应用待确认接入。
+WCH双Flash模式按8KiB页独立擦除。保存与运行时加载分别核验，applied仅表示
+当前profile的实验模型可用；正式OEM索引/数据域/同帧状态仍未闭环，当前状态见根目录HANDOFF.md。
 备份/恢复使用`tools/calibration_storage_client.py`；仅显式restore写MCU槽，不写MINI2。
 2026-09-18黑体入口：`tools/calibrate_t384_blackbody.py`默认仅引导0°C、50°C，每点30帧，距离0.01m、发射率0.98；独立验证可显式补充，默认由用户后续验证。先检查HTTP可达性，再等待黑体确认；
 新增只读`cal-state`用原RPC/scratch读取gain/Vtemp/自动FFC开关/快门，并核对身份及查询首尾gain。

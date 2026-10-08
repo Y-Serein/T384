@@ -20,7 +20,12 @@
 #define T384_PIPELINE_CHUNK_BYTES \
     (T384_RAW16_WIDTH * T384_RAW16_BYTES_PER_PIXEL * T384_PIPELINE_CHUNK_ROWS)
 #define T384_PIPELINE_STREAMING (T384_DUALCORE && (T384_RAW16_PROFILE == 384u || T384_RAW16_PROFILE == 640u))
-#define T384_PIPELINE_PACKED_PICTURE (T384_PIPELINE_STREAMING && T384_RAW16_PROFILE == 640u)
+#define T384_PIPELINE_640_Y16 (T384_PIPELINE_STREAMING && \
+    T384_RAW16_PROFILE == 640u && T384_NETWORK_ON_V5F && T384_640_Y16_STREAM_ENABLED)
+#define T384_PIPELINE_PACKED_PICTURE (T384_PIPELINE_STREAMING && \
+    T384_RAW16_PROFILE == 640u && !T384_PIPELINE_640_Y16)
+#define T384_PIPELINE_SHARED_STORAGE (T384_NETWORK_ON_V5F && \
+    (T384_PIPELINE_PACKED_PICTURE || T384_PIPELINE_640_Y16))
 #if T384_PIPELINE_PACKED_PICTURE
 #define T384_PIPELINE_PACKED_FRAME_BYTES \
     ((T384_RAW16_WIDTH * 4u + 32u) * (T384_RAW16_HEIGHT / 4u))
@@ -31,6 +36,11 @@
 #endif
 #if T384_PIPELINE_STREAMING
 #if T384_RAW16_PROFILE == 640u
+#if T384_PIPELINE_640_Y16
+/* 550 KiB absorbs most of a 640 KiB physical frame while TCP drains it.
+ * This is a streaming queue, not a promise of zero drops with a slow host. */
+#define T384_PIPELINE_SLOT_COUNT 110u
+#else
 /* A 640 packed frame is 128 storage chunks.  The V5F data-plane layout
  * keeps the complete frame split between the local DTCM window and a shared
  * SRAM extension so a slow client cannot force a mid-frame abort. */
@@ -38,6 +48,7 @@
 #define T384_PIPELINE_SLOT_COUNT 128u
 #else
 #define T384_PIPELINE_SLOT_COUNT 128u
+#endif
 #endif
 #else
 #define T384_PIPELINE_SLOT_COUNT 24u

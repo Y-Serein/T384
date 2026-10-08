@@ -9,6 +9,12 @@
 #define T384_RAW16_PROFILE 640u
 #endif
 
+/* User-authorized 640 radiometry transport bring-up. Set to 0 for the
+ * previous packed-Picture / temporary mode-probe build. */
+#ifndef T384_640_Y16_STREAM_ENABLED
+#define T384_640_Y16_STREAM_ENABLED 1u
+#endif
+
 /*
  * The 384 and 640 profiles use the V5F high-rate network data plane.  Keep
  * the selector derived from the profile so changing the profile does not

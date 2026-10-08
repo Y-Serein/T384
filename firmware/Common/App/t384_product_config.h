@@ -32,6 +32,14 @@
 
 #define T384_HTTP_PORT 80u
 
+/* Temporary, user-authorized 640 boot experiment. Set to 0 to build the
+ * unchanged native-Picture path. Never persists a MINI2 setting. */
+#ifndef T384_640_MODE_PROBE_ENABLED
+#define T384_640_MODE_PROBE_ENABLED 1u
+#endif
+#define T384_640_MODE_PROBE_MS 2000u
+#define T384_640_MODE_PROBE_RESTORE_FRAMES 3u
+
 /*
  * MINI2 DVP bring-up hypothesis.  The interface documents do not freeze the
  * sampling edge or sync polarity, so these values are deliberately exposed
@@ -58,10 +66,15 @@
  * length. This is byte packing only, not a JPEG encoder or wire format. */
 #define T384_MINI2_DMA_BLOCK_ROWS T384_PIPELINE_CHUNK_ROWS
 #elif T384_RAW16_PROFILE == 640u
-/* Independent bring-up hypothesis, not WN2384 byte-order evidence. Compare
- * /diag's raw prefix and both ROI interpretations before radiometry work. */
+/* TIFSC640 mode-1 observation: LE prefix 21452..21460 and ROI sigma 3.36
+ * counts, versus BE sigma 860.99 (2026-10-08). Normalize only Y16; the
+ * packed native-Picture build retains its separate YUYV conversion. */
 #ifndef T384_MINI2_DVP_Y16_LITTLE_ENDIAN
+#if T384_PIPELINE_640_Y16
+#define T384_MINI2_DVP_Y16_LITTLE_ENDIAN 1u
+#else
 #define T384_MINI2_DVP_Y16_LITTLE_ENDIAN 0u
+#endif
 #endif
 #define T384_MINI2_DMA_BLOCK_ROWS T384_PIPELINE_CHUNK_ROWS
 #else

@@ -11,30 +11,39 @@
 
 #define T384_V5F_ENTRY 0x00030000u
 #define T384_IPC_MAGIC 0x54334231u
+#if T384_PIPELINE_640_Y16
+/* Prevent an old V3F heap owner from sharing the newly reclaimed regions. */
+#define T384_IPC_VERSION 7u
+#else
 #define T384_IPC_VERSION 6u
+#endif
 #define T384_DTCM_PROBE 0x16384288u
 #define T384_FRAME_BANKS 2u
 #if T384_PIPELINE_STREAMING
-#if T384_PIPELINE_PACKED_PICTURE
-#if T384_NETWORK_ON_V5F
-/* The V5F DTCM window holds the first half of the packed ring.  The second
- * half and the ring metadata live in a reserved shared-SRAM extension; this
- * keeps the complete 640 packed frame available without overlapping the
- * V5F HTTP/NCM/lwIP sections. */
+#if T384_PIPELINE_SHARED_STORAGE
+#if T384_PIPELINE_640_Y16
+#define T384_FRAME_LOCAL_SLOT_COUNT 43u
+#define T384_FRAME_SHARED_SLOT_COUNT 32u
+#define T384_FRAME_EXTRA_CODE_SLOT_COUNT 26u
+#define T384_FRAME_EXTRA_DATA_SLOT_COUNT 9u
+#define T384_FRAME_EXTRA_CODE_BYTES (T384_FRAME_EXTRA_CODE_SLOT_COUNT * T384_PIPELINE_CHUNK_BYTES)
+#define T384_FRAME_EXTRA_DATA_BYTES (T384_FRAME_EXTRA_DATA_SLOT_COUNT * T384_PIPELINE_CHUNK_BYTES)
+#else
 #define T384_FRAME_LOCAL_SLOT_COUNT 64u
-#define T384_FRAME_SHARED_SLOT_COUNT \
-    (T384_PIPELINE_SLOT_COUNT - T384_FRAME_LOCAL_SLOT_COUNT)
+#define T384_FRAME_SHARED_SLOT_COUNT 64u
+#endif
 #define T384_CAPTURE_BUFFER_BYTES \
     (T384_FRAME_LOCAL_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES)
 #define T384_FRAME_SHARED_PAYLOAD_BYTES \
     (T384_FRAME_SHARED_SLOT_COUNT * T384_PIPELINE_STORAGE_CHUNK_BYTES)
-#define T384_FRAME_SHARED_METADATA_BYTES \
-    (T384_PIPELINE_SLOT_COUNT * 16u + 32u)
+/* Keep the shared payload at 0x20144800 for both 110-slot Y16 and
+ * 128-slot packed Picture. Unused metadata words are just padding. */
+#define T384_FRAME_SHARED_METADATA_BYTES (128u * 16u + 32u)
 #define T384_FRAME1_ITCM_BYTES 32u
 #define T384_FRAME1_DTCM_BYTES 32u
 #define T384_FRAME1_CODE_BYTES 32u
 #define T384_FRAME1_DATA_BYTES 32u
-#else
+#elif T384_PIPELINE_PACKED_PICTURE
 /* Existing SRAM partitions only; ITCM holds word-access metadata, no pixels.
  * 85+7+16+20 slots; final shared-data space holds the HTTP read lease. */
 #define T384_CAPTURE_BUFFER_BYTES (85u * T384_PIPELINE_STORAGE_CHUNK_BYTES)
@@ -42,7 +51,6 @@
 #define T384_FRAME1_DTCM_BYTES (7u * T384_PIPELINE_STORAGE_CHUNK_BYTES)
 #define T384_FRAME1_CODE_BYTES (16u * T384_PIPELINE_STORAGE_CHUNK_BYTES)
 #define T384_FRAME1_DATA_BYTES (20u * T384_PIPELINE_STORAGE_CHUNK_BYTES + T384_PIPELINE_CHUNK_BYTES)
-#endif
 #else
 #define T384_CAPTURE_BUFFER_BYTES (T384_PIPELINE_SLOT_COUNT * T384_PIPELINE_CHUNK_BYTES)
 #define T384_FRAME1_ITCM_BYTES (T384_PIPELINE_SLOT_COUNT * 16u)
@@ -105,9 +113,43 @@ extern uint8_t t384_frame1_itcm[T384_FRAME1_ITCM_BYTES];
 extern uint8_t t384_frame1_dtcm[T384_FRAME1_DTCM_BYTES];
 extern uint8_t t384_frame1_code[T384_FRAME1_CODE_BYTES];
 extern uint8_t t384_frame1_data[T384_FRAME1_DATA_BYTES];
-#if T384_PIPELINE_PACKED_PICTURE && T384_NETWORK_ON_V5F
+#if T384_PIPELINE_SHARED_STORAGE
 extern uint8_t t384_frame_shared_payload[T384_FRAME_SHARED_PAYLOAD_BYTES];
 extern uint8_t t384_frame_shared_metadata[T384_FRAME_SHARED_METADATA_BYTES];
+#if T384_PIPELINE_640_Y16
+extern uint8_t t384_frame_extra_code[T384_FRAME_EXTRA_CODE_BYTES];
+extern uint8_t t384_frame_extra_data[T384_FRAME_EXTRA_DATA_BYTES];
+#endif
+
+static inline uint8_t *t384_frame_slot_data(uint32_t slot)
+{
+    if (slot < T384_FRAME_LOCAL_SLOT_COUNT)
+        return t384_dualcore_frame + slot * T384_PIPELINE_STORAGE_CHUNK_BYTES;
+    slot -= T384_FRAME_LOCAL_SLOT_COUNT;
+    if (slot < T384_FRAME_SHARED_SLOT_COUNT)
+        return t384_frame_shared_payload + slot * T384_PIPELINE_STORAGE_CHUNK_BYTES;
+#if T384_PIPELINE_640_Y16
+    slot -= T384_FRAME_SHARED_SLOT_COUNT;
+    if (slot < T384_FRAME_EXTRA_CODE_SLOT_COUNT)
+        return t384_frame_extra_code + slot * T384_PIPELINE_CHUNK_BYTES;
+    slot -= T384_FRAME_EXTRA_CODE_SLOT_COUNT;
+    if (slot < T384_FRAME_EXTRA_DATA_SLOT_COUNT)
+        return t384_frame_extra_data + slot * T384_PIPELINE_CHUNK_BYTES;
+#endif
+    return NULL;
+}
+static inline uint8_t *t384_frame_slot_metadata(void)
+{
+    return t384_frame_shared_metadata + 32u;
+}
+typedef char t384_shared_metadata_fits[
+    T384_PIPELINE_SLOT_COUNT * 16u + 32u <= T384_FRAME_SHARED_METADATA_BYTES ? 1 : -1];
+#if T384_PIPELINE_640_Y16
+typedef char t384_y16_slots_match[
+    T384_FRAME_LOCAL_SLOT_COUNT + T384_FRAME_SHARED_SLOT_COUNT +
+    T384_FRAME_EXTRA_CODE_SLOT_COUNT + T384_FRAME_EXTRA_DATA_SLOT_COUNT ==
+        T384_PIPELINE_SLOT_COUNT ? 1 : -1];
+#endif
 #endif
 
 #if T384_PIPELINE_PACKED_PICTURE
@@ -122,17 +164,11 @@ typedef char t384_picture_region_bounds[
 extern uint8_t t384_picture_expand_scratch[T384_PIPELINE_CHUNK_BYTES];
 static inline uint8_t *t384_picture_slot_data(uint32_t slot)
 {
-    if (slot < T384_FRAME_LOCAL_SLOT_COUNT) {
-        return t384_dualcore_frame +
-            slot * T384_PIPELINE_STORAGE_CHUNK_BYTES;
-    }
-    return t384_frame_shared_payload +
-        (slot - T384_FRAME_LOCAL_SLOT_COUNT) *
-            T384_PIPELINE_STORAGE_CHUNK_BYTES;
+    return t384_frame_slot_data(slot);
 }
 static inline uint8_t *t384_picture_slot_metadata(void)
 {
-    return t384_frame_shared_metadata + 32u;
+    return t384_frame_slot_metadata();
 }
 static inline void t384_picture_prepare_payload(t384_frame_chunk_view_t *view)
 {
@@ -188,9 +224,21 @@ static inline uint8_t *t384_frame_probe_region(unsigned region)
 #if T384_NETWORK_ON_V5F
     /* The packed 640 ring has a shared-SRAM metadata header reserved for
      * probes. Other V5F profiles retain the small DTCM metadata bank. */
-#if T384_PIPELINE_PACKED_PICTURE
+#if T384_PIPELINE_SHARED_STORAGE
+#if T384_PIPELINE_640_Y16
+    /* Prove real accesses to each new payload region before capture starts.
+     * These words are overwritten by ordinary pixels after the handshake. */
+    switch (region) {
+    case 0u: return t384_dualcore_frame;
+    case 1u: return t384_frame_shared_payload;
+    case 2u: return t384_frame_extra_code;
+    case 3u: return t384_frame_extra_data;
+    default: return t384_frame_shared_metadata;
+    }
+#else
     return t384_frame_shared_metadata +
         (region % T384_FRAME_PROBE_REGIONS) * 4u;
+#endif
 #else
     return (uint8_t *)(uintptr_t)(0x200FB000u +
         T384_PIPELINE_SLOT_COUNT * 16u +

@@ -30,6 +30,14 @@ def apply_model(base_url: str, report: dict, evidence: dict) -> dict:
     """
     low = report["low"]
     high = report["high"]
+    for name, point in (("low", low), ("high", high)):
+        geometry = point.get("geometry", {})
+        if (geometry.get("width"), geometry.get("height"),
+                geometry.get("frame_bytes"), geometry.get("pixel_format")) != \
+                (384, 288, 221184, "Y16BE"):
+            raise ValueError(f"{name} capture is not the supported 384x288 Y16BE profile")
+    if report.get("validation") and not report.get("experimental_validation_passed"):
+        raise ValueError("independent validation did not pass; refusing to apply model")
     delta_c = high["setpoint_c"] - low["setpoint_c"]
     if delta_c <= 0:
         raise ValueError("invalid setpoint range for calibration apply")
@@ -123,6 +131,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"独立点ROI平均误差 {check['mean_error_c']:.3f} °C；最大帧ROI误差 {check['max_abs_frame_roi_error_c']:.3f} °C")
     print(f"报告：{output/'report.json'}")
     if getattr(args, "apply", False):
+        if report["validation"] and not report["experimental_validation_passed"]:
+            raise RuntimeError("独立验证未通过，拒绝写入经验标定槽")
         applied = apply_model(args.url.rsplit("/", 1)[0], report, evidence)
         print(f"标定包已写入设备存储并校验通过：calibration_id={applied.get('calibration_id')} "
               f"gain=" + ("unknown" if applied.get("gain") == 0xFF else str(applied.get("gain"))))

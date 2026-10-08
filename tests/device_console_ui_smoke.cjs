@@ -35,7 +35,7 @@ const sandbox = {document:{getElementById:element, querySelectorAll(){return [];
   console, Uint8Array, Uint32Array, Uint8ClampedArray, URL};
 vm.runInNewContext(script,sandbox);
 const ui = sandbox.ui;
-for (const [w,h] of [[256,192],[384,288]]) {
+for (const [w,h] of [[256,192],[384,288],[640,512]]) {
   ui.setup(w,h,2);
   const frame = new Uint8Array(w*h*2);
   for (let i=0;i<w*h;i++) {frame[i*2]=0x27; frame[i*2+1]=0x10;}
@@ -60,10 +60,12 @@ element('centerRoiBtn').listeners.click(); assert.match(element('roiSummary').te
 element('clearRoiBtn').listeners.click(); assert.equal(ui.roi(),null);
 ui.setup(256,192,2,0,100);ui.renderRaw16Frame(new Uint8Array(256*192*2).fill(10));
 assert.match(element('centerTemperature').innerHTML,/25\.7/);
+ui.setup(640,512,2,0,100);ui.renderRaw16Frame(new Uint8Array(640*512*2).fill(10));
+assert.match(element('centerTemperature').innerHTML,/25\.7/);
 ui.setup(384,288,3);ui.renderRaw16Frame(frame);
 assert.equal(element('minimumPosition').textContent,'--'); assert.equal(element('roiY16').textContent,'--');
 ui.detectCapabilities().then(()=> {
   assert.equal(element('ipFallback').href,'http://192.168.17.1/');
   assert.match(element('otaInfo').textContent,/未提供/); assert.equal(element('otaUploadBtn').disabled,true);
-  console.log('device UI 256/384 raw integrity/ROI/pointer/extrema/no-model/Picture/capability smoke passed');
+  console.log('device UI 256/384/640 raw integrity/ROI/pointer/extrema/no-model/Picture/capability smoke passed');
 }).catch(error=>{console.error(error);process.exitCode=1;});

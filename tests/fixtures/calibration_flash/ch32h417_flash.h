@@ -8,4 +8,5 @@ void FLASH_Unlock(void);
 void FLASH_Lock(void);
 FLASH_Status FLASH_ErasePage(uint32_t address);
 FLASH_Status FLASH_ProgramWord(uint32_t address, uint32_t word);
+FLASH_Status FLASH_ROM_ERASE(uint32_t address, uint32_t length);
 #endif

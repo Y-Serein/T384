@@ -70,8 +70,19 @@ def capture(args: argparse.Namespace) -> int:
     # Never mix new frames into an earlier point or overwrite its evidence.
     output.mkdir(parents=True, exist_ok=False)
     diag_url = args.diag_url or args.url.rsplit("/", 1)[0] + "/diag"
-    evidence=load_evidence(args.table_evidence,args.parameter_evidence)
     before = fetch_diag(diag_url)
+    if getattr(args, "live_identity_only", False):
+        pn, sn, fw = (before.get(key, "") for key in
+                       ("mini2.pn", "mini2.sn", "mini2.firmware_version"))
+        if not pn or not sn or not fw:
+            raise BenchError("640 live identity is incomplete; refusing capture")
+        evidence = dict(
+            identity=dict(pn=pn, sn=sn, fw_hex=fw.encode("ascii").hex()),
+            files={}, algorithm_rules_verified=False,
+            source="live-identity-only-no-OEM-table-proof",
+        )
+    else:
+        evidence=load_evidence(args.table_evidence,args.parameter_evidence)
     if before.get("source.pixel_format") != "2":
         raise BenchError("source is not Y16/TPD; calibration capture requires pixel_format=2")
     if before.get("stream.active")!="0":

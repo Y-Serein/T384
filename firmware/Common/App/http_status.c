@@ -23,6 +23,7 @@
 #include "t384_module_files.h"
 #include "t384_module_files_http.h"
 #include "t384_v5f_net_memory.h"
+#include "t384_640_mode_probe.h"
 
 #if T384_NETWORK_ON_V5F
 /* Two sockets are enough for the image page plus /diag and keep the V5F
@@ -735,6 +736,77 @@ static size_t build_diag_response(void)
         (unsigned long)__atomic_load_n(&shared->banks[1].state, __ATOMIC_ACQUIRE));
 #endif
 #endif
+#if T384_RAW16_PROFILE == 640u && T384_640_MODE_PROBE_ENABLED && \
+    T384_NETWORK_ON_V5F && !T384_PIPELINE_640_Y16 && defined(Core_V5F)
+    /* Local evidence, not added to the fixed shared IPC structure. Reuse
+     * the existing /diag buffer; no frame-sized allocation or new endpoint. */
+    static t384_640_mode_probe_stats_t probe T384_NET_HTTP_STORAGE;
+    static const char *const probe_states[] = {
+        "disabled", "skipped", "observing", "restoring", "verifying",
+        "restored", "restore_failed", "pending"
+    };
+    const bool probe_valid = t384_640_mode_probe_get_stats(&probe);
+    t384_raw16_roi_metrics_t probe_roi;
+    t384_raw16_roi_calculate(&probe.roi, &probe_roi);
+    char probe_prefix[65];
+    format_hex_bytes(probe.prefix, probe.prefix_valid ? sizeof(probe.prefix) : 0u,
+                     probe_prefix);
+    APPEND_DIAG(
+        "probe640.snapshot_valid=%u\n"
+        "probe640.state=%s\n"
+        "probe640.set_result=%lu\n"
+        "probe640.query_result=%lu\n"
+        "probe640.mode=%lu\n"
+        "probe640.restore_result=%lu\n"
+        "probe640.restore_query_result=%lu\n"
+        "probe640.restore_mode=%lu\n"
+        "probe640.baseline_yuv=%lu\n"
+        "probe640.restore_yuv=%lu\n"
+        "probe640.observation_ms=%lu\n"
+        "probe640.frames=%lu\n"
+        "probe640.complete_frames=%lu\n"
+        "probe640.bad_frames=%lu\n"
+        "probe640.fifo_overflows=%lu\n"
+        "probe640.last_rows=%lu\n"
+        "probe640.last_bytes=%lu\n"
+        "probe640.prefix_hex=%s\n"
+        "probe640.roi_valid=%lu\n"
+        "probe640.roi_samples=%lu\n"
+        "probe640.roi_be_mean_x100=%lu\n"
+        "probe640.roi_le_mean_x100=%lu\n"
+        "probe640.roi_be_stddev_x100=%lu\n"
+        "probe640.roi_le_stddev_x100=%lu\n"
+        "probe640.picture_complete_frames=%lu\n"
+        "probe640.picture_bad_frames=%lu\n"
+        "probe640.radiometry_verified=0\n",
+        probe_valid ? 1u : 0u,
+        probe_valid && probe.state < sizeof(probe_states) / sizeof(probe_states[0])
+            ? probe_states[probe.state] : "snapshot_unavailable",
+        (unsigned long)probe.set_result,
+        (unsigned long)probe.query_result,
+        (unsigned long)probe.mode,
+        (unsigned long)probe.restore_result,
+        (unsigned long)probe.restore_query_result,
+        (unsigned long)probe.restore_mode,
+        (unsigned long)probe.baseline_yuv,
+        (unsigned long)probe.restore_yuv,
+        (unsigned long)probe.observation_ms,
+        (unsigned long)probe.frames,
+        (unsigned long)probe.complete_frames,
+        (unsigned long)probe.bad_frames,
+        (unsigned long)probe.fifo_overflows,
+        (unsigned long)probe.last_rows,
+        (unsigned long)probe.last_bytes,
+        probe_prefix,
+        (unsigned long)probe.roi.valid,
+        (unsigned long)probe.roi.sample_count,
+        (unsigned long)probe_roi.mean_raw_x100,
+        (unsigned long)probe_roi.le_mean_raw_x100,
+        (unsigned long)probe_roi.stddev_raw_x100,
+        (unsigned long)probe_roi.le_stddev_raw_x100,
+        (unsigned long)probe.picture_complete_frames,
+        (unsigned long)probe.picture_bad_frames);
+#endif
 #undef APPEND_DIAG
     char header[DIAG_HEADER_RESERVE];
     const int header_length = snprintf(
@@ -1191,8 +1263,8 @@ static void get_temp_model_config(t384_temp_model_config_t *cfg)
     cfg->model = T384_EXPERIMENTAL_TEMP_MODEL;
     cfg->zero_c_x100 = (unsigned long)T384_EXPERIMENTAL_Y16_ZERO_C_X100;
     cfg->counts_per_c_x100 = (unsigned long)T384_EXPERIMENTAL_Y16_COUNTS_PER_C_X100;
-#if T384_RAW16_PROFILE == 640u
-    /* Image-only bring-up: never inherit a saved model from the 384 test. */
+#if T384_RAW16_PROFILE == 640u && !T384_PIPELINE_640_Y16
+    /* Picture transport cannot inherit a saved Y16 experiment. */
     return;
 #endif
     if (t384_cal_storage_manifest(&manifest) == T384_CAL_OK &&
@@ -1216,6 +1288,32 @@ static void get_temp_model_config(t384_temp_model_config_t *cfg)
             return;
         }
     }
+}
+
+/* A persisted payload is usable only for the running profile and only while
+ * this source is delivering Y16. This remains an experimental display model;
+ * it is intentionally independent of OEM radiometry readiness. */
+static bool stored_temp_model_matches_profile(t384_temp_model_config_t *cfg)
+{
+    if (cfg == NULL) return false;
+    t384_cal_manifest_t manifest;
+    char profile[T384_CAL_STORAGE_PROFILE_MAX];
+    snprintf(profile, sizeof(profile), "%ux%u", T384_RAW16_WIDTH,
+             T384_RAW16_HEIGHT);
+    get_temp_model_config(cfg);
+    return t384_cal_storage_manifest(&manifest) == T384_CAL_OK &&
+           strcmp(manifest.profile, profile) == 0 &&
+           strcmp(manifest.model, T384_CAL_MODEL_EMPIRICAL_2POINT) == 0 &&
+           manifest.payload_len == sizeof(t384_cal_empirical_2point_t) &&
+           strcmp(cfg->model, T384_CAL_MODEL_EMPIRICAL_2POINT) == 0 &&
+           cfg->counts_per_c_x100 > 0u;
+}
+
+static bool runtime_temp_model_available(t384_temp_model_config_t *cfg)
+{
+    return stored_temp_model_matches_profile(cfg) &&
+           t384_frame_source_stream_ready() &&
+           t384_frame_source_pixel_format() == T384_FRAME_PIXEL_FORMAT_Y16_BE;
 }
 
 static err_t send_raw16_stream(http_client_t *client)
@@ -1411,6 +1509,9 @@ static err_t handle_calibration_request(http_client_t *client)
     if (body_len!=content_length)
         return send_json_status(client,400,"Bad Request","{\"error\":\"body_length\"}");
     const bool is_device = strncmp(request, "GET /api/v1/device ", sizeof("GET /api/v1/device ") - 1u) == 0;
+    const bool is_storage_status = strncmp(
+        request, "GET /api/v1/calibration/v1/status ",
+        sizeof("GET /api/v1/calibration/v1/status ") - 1u) == 0;
     const bool is_manifest = strncmp(request, "GET /api/v1/calibration/v1/manifest ", sizeof("GET /api/v1/calibration/v1/manifest ") - 1u) == 0;
     const bool is_data = strncmp(request, "GET /api/v1/calibration/v1/data ", sizeof("GET /api/v1/calibration/v1/data ") - 1u) == 0;
     if (is_device) {
@@ -1424,10 +1525,42 @@ static err_t handle_calibration_request(http_client_t *client)
             return send_json_status(client, 500, "Internal Server Error", "{}");
         return send_json_status(client, 200, "OK", (const char *)client->request);
     }
+    if (is_storage_status) {
+        t384_cal_manifest_t manifest;
+        t384_temp_model_config_t runtime_cfg;
+        const t384_cal_status_t init_status = t384_cal_storage_init_status();
+        const t384_cal_status_t manifest_status =
+            t384_cal_storage_manifest(&manifest);
+        const unsigned slot = (unsigned)t384_cal_storage_active_slot();
+        const unsigned has_manifest = manifest_status == T384_CAL_OK ? 1u : 0u;
+        const unsigned long generation = has_manifest
+            ? (unsigned long)manifest.generation : 0ul;
+        const bool runtime_available = runtime_temp_model_available(&runtime_cfg);
+        const int encoded = snprintf(
+            (char *)client->request, sizeof(client->request),
+            "{\"init_status\":\"%s\",\"has_valid_slot\":%u,"
+            "\"active_slot\":%u,\"generation\":%lu,"
+            "\"slot0_addr\":%lu,\"slot1_addr\":%lu,"
+            "\"slot_size\":%lu,\"runtime_model_available\":%s,"
+            "\"runtime_model\":\"%s\",\"runtime_zero_c_x100\":%lu,"
+            "\"runtime_counts_per_c_x100\":%lu}",
+            t384_cal_status_name(init_status), has_manifest, slot,
+            generation, (unsigned long)T384_CAL_STORAGE_SLOT0_ADDR,
+            (unsigned long)T384_CAL_STORAGE_SLOT1_ADDR,
+            (unsigned long)T384_CAL_STORAGE_SLOT_SIZE,
+            runtime_available ? "true" : "false", runtime_cfg.model,
+            runtime_cfg.zero_c_x100, runtime_cfg.counts_per_c_x100);
+        if (encoded < 0 || (size_t)encoded >= sizeof(client->request)) {
+            return send_json_status(client, 500, "Internal Server Error", "{}");
+        }
+        return send_json_status(client, 200, "OK", (const char *)client->request);
+    }
     if (is_manifest) {
         t384_cal_manifest_t manifest;
         const t384_cal_status_t status = t384_cal_storage_manifest(&manifest);
         if (status != T384_CAL_OK) return send_json_status(client, 404, "Not Found", "{\"error\":\"unavailable\"}");
+        t384_temp_model_config_t runtime_cfg;
+        const bool applied = runtime_temp_model_available(&runtime_cfg);
         char identity[2u*T384_CAL_STORAGE_ID_MAX+1u];
         static const char hex[]="0123456789abcdef";
         for (size_t i=0;i<T384_CAL_STORAGE_ID_MAX;++i) {
@@ -1436,11 +1569,13 @@ static err_t handle_calibration_request(http_client_t *client)
         }
         identity[sizeof(identity)-1u]=0;
         const int n = snprintf((char *)client->request, sizeof(client->request),
-                               "{\"schema\":%lu,\"generation\":%lu,\"payload_len\":%lu,\"payload_crc32\":%lu,\"calibration_id\":%lu,\"model\":\"%s\",\"profile\":\"%s\",\"gain\":%u,\"identity\":\"%s\",\"header_crc32\":%lu,\"applied\":false,\"oem_radiometry_ready\":false,\"application_blocker\":\"runtime_adapter_unverified\"}",
+                               "{\"schema\":%lu,\"generation\":%lu,\"payload_len\":%lu,\"payload_crc32\":%lu,\"calibration_id\":%lu,\"model\":\"%s\",\"profile\":\"%s\",\"gain\":%u,\"identity\":\"%s\",\"header_crc32\":%lu,\"applied\":%s,\"oem_radiometry_ready\":false,\"application_blocker\":\"%s\"}",
                                (unsigned long)manifest.schema, (unsigned long)manifest.generation,
                                (unsigned long)manifest.payload_len, (unsigned long)manifest.payload_crc32,
                                (unsigned long)manifest.calibration_id, manifest.model, manifest.profile,
-                               (unsigned)manifest.gain, identity, (unsigned long)manifest.header_crc32);
+                               (unsigned)manifest.gain, identity, (unsigned long)manifest.header_crc32,
+                               applied ? "true" : "false",
+                               applied ? "" : "model_unavailable_or_not_y16");
         if (n <= 0 || (size_t)n >= sizeof(client->request)) return send_json_status(client, 500, "Internal Server Error", "{\"error\":\"encode\"}");
         return send_json_status(client, 200, "OK", (const char *)client->request);
     }
@@ -1472,10 +1607,15 @@ static err_t handle_calibration_request(http_client_t *client)
     } else if (strncmp(request, "POST /api/v1/calibration/v1/commit ", sizeof("POST /api/v1/calibration/v1/commit ")-1u) == 0) {
         if (body_len != 0u) return send_json_status(client, 400, "Bad Request", "{\"error\":\"body_not_allowed\"}");
         const t384_cal_status_t status=t384_cal_storage_finish();
+        t384_temp_model_config_t runtime_cfg;
+        const bool applied = status == T384_CAL_OK &&
+            runtime_temp_model_available(&runtime_cfg);
         char result[160];
         snprintf(result,sizeof(result),
-                 "{\"committed\":%s,\"status\":\"%s\",\"applied\":false,\"oem_radiometry_ready\":false}",
-                 status==T384_CAL_OK?"true":"false",t384_cal_status_name(status));
+                 "{\"committed\":%s,\"status\":\"%s\",\"applied\":%s,\"oem_radiometry_ready\":false,\"application_blocker\":\"%s\"}",
+                 status==T384_CAL_OK?"true":"false",t384_cal_status_name(status),
+                 applied ? "true" : "false",
+                 applied ? "" : "model_unavailable_or_not_y16");
         return send_json_status(client,status==T384_CAL_OK?200:status==T384_CAL_FLASH?500:409,
                                 status==T384_CAL_OK?"OK":"Error",result);
     } else if (strncmp(request, "POST /api/v1/calibration/v1/abort ", sizeof("POST /api/v1/calibration/v1/abort ")-1u) == 0) {

@@ -31,9 +31,24 @@ FLASH_Status FLASH_ProgramWord(uint32_t address, uint32_t word)
     *(uint32_t *)(uintptr_t)address &= word;
     return FLASH_COMPLETE;
 }
+FLASH_Status FLASH_ROM_ERASE(uint32_t address, uint32_t length)
+{
+    assert(address >= FLASH_BASE + T384_CAL_STORAGE_SLOT0_ADDR &&
+           address + length <= FLASH_BASE + T384_CAL_STORAGE_RESERVED_END);
+    const size_t page = (*(uint32_t *)(uintptr_t)FLASH_CFGR0_BASE & (1u << 28)) ? 8192u : 4096u;
+    assert(length == page);
+    address &= ~(uint32_t)(page - 1u);
+    memset((void *)(uintptr_t)address, 0xFF, page);
+    ++erases;
+    return FLASH_COMPLETE;
+}
 
 int main(void)
 {
+    /* The same physical A/B pair must be used by every compiled profile. */
+    assert(T384_CAL_STORAGE_SLOT0_ADDR == 0x50000u);
+    assert(T384_CAL_STORAGE_SLOT1_ADDR == 0x52000u);
+    assert(T384_CAL_STORAGE_RESERVED_END - T384_CAL_STORAGE_SLOT0_ADDR == 0x4000u);
     void *slots = (void *)(uintptr_t)(FLASH_BASE + T384_CAL_STORAGE_SLOT0_ADDR);
     assert(mmap(slots, 0x4000u, PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) == slots);
@@ -52,7 +67,8 @@ int main(void)
         manifest.payload_crc32 = t384_cal_crc32(&payload, sizeof(payload));
         manifest.calibration_id = 1u;
         strcpy(manifest.model, T384_CAL_MODEL_EMPIRICAL_2POINT);
-        strcpy(manifest.profile, "384x288");
+        snprintf(manifest.profile, sizeof(manifest.profile), "%ux%u",
+                 T384_RAW16_WIDTH, T384_RAW16_HEIGHT);
         memset(manifest.identity, 0x42, sizeof(manifest.identity));
         manifest.gain = 0xFFu;
         manifest.header_crc32 = t384_cal_crc32(&manifest, sizeof(manifest));
