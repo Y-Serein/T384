@@ -1,5 +1,6 @@
 #include "t384_ncm.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #include "ch32h417.h"
@@ -32,6 +33,114 @@ static uint16_t packet_filter;
 static uint32_t receive_drop_count;
 static bool network_initialized;
 static volatile t384_ncm_stats_t ncm_stats T384_NET_CONTROL_STORAGE;
+
+/* The toolchain's generic memcpy is a byte-at-a-time loop.  NCM transmit
+ * buffers and lwIP pbuf payloads are normally at least halfword aligned, so
+ * keep this final pbuf-to-NTB copy on the widest safe access for each segment.
+ * may_alias avoids type-alias assumptions; volatile prevents GCC from folding
+ * these loops back into the same generic memcpy call. */
+typedef uint32_t t384_ncm_u32_t __attribute__((may_alias));
+typedef uint16_t t384_ncm_u16_t __attribute__((may_alias));
+
+static void t384_ncm_copy_segment(uint8_t *destination,
+                                   const uint8_t *source,
+                                   uint16_t length)
+{
+    uint8_t *dst = destination;
+    const uint8_t *src = source;
+
+    if ((((uintptr_t)dst ^ (uintptr_t)src) & 3u) == 0u) {
+        while (length > 0u && ((uintptr_t)dst & 3u) != 0u) {
+            *dst++ = *src++;
+            --length;
+        }
+
+        volatile t384_ncm_u32_t *dst32 =
+            (volatile t384_ncm_u32_t *)(void *)dst;
+        const volatile t384_ncm_u32_t *src32 =
+            (const volatile t384_ncm_u32_t *)(const void *)src;
+        while (length >= 16u) {
+            const uint32_t word0 = src32[0];
+            const uint32_t word1 = src32[1];
+            const uint32_t word2 = src32[2];
+            const uint32_t word3 = src32[3];
+            dst32[0] = word0;
+            dst32[1] = word1;
+            dst32[2] = word2;
+            dst32[3] = word3;
+            src32 += 4;
+            dst32 += 4;
+            src += 16;
+            dst += 16;
+            length = (uint16_t)(length - 16u);
+        }
+        while (length >= 4u) {
+            *dst32++ = *src32++;
+            src += 4;
+            dst += 4;
+            length = (uint16_t)(length - 4u);
+        }
+    } else if ((((uintptr_t)dst | (uintptr_t)src) & 1u) == 0u) {
+        volatile t384_ncm_u16_t *dst16 =
+            (volatile t384_ncm_u16_t *)(void *)dst;
+        const volatile t384_ncm_u16_t *src16 =
+            (const volatile t384_ncm_u16_t *)(const void *)src;
+        while (length >= 16u) {
+            const uint16_t half0 = src16[0];
+            const uint16_t half1 = src16[1];
+            const uint16_t half2 = src16[2];
+            const uint16_t half3 = src16[3];
+            const uint16_t half4 = src16[4];
+            const uint16_t half5 = src16[5];
+            const uint16_t half6 = src16[6];
+            const uint16_t half7 = src16[7];
+            dst16[0] = half0;
+            dst16[1] = half1;
+            dst16[2] = half2;
+            dst16[3] = half3;
+            dst16[4] = half4;
+            dst16[5] = half5;
+            dst16[6] = half6;
+            dst16[7] = half7;
+            src16 += 8;
+            dst16 += 8;
+            src += 16;
+            dst += 16;
+            length = (uint16_t)(length - 16u);
+        }
+        while (length >= 2u) {
+            *dst16++ = *src16++;
+            src += 2;
+            dst += 2;
+            length = (uint16_t)(length - 2u);
+        }
+    }
+
+    while (length > 0u) {
+        *dst++ = *src++;
+        --length;
+    }
+}
+
+static uint16_t t384_ncm_copy_pbuf(uint8_t *destination,
+                                    const struct pbuf *frame)
+{
+    uint16_t copied = 0u;
+    uint16_t remaining = frame->tot_len;
+
+    for (const struct pbuf *part = frame;
+         part != NULL && remaining > 0u;
+         part = part->next) {
+        const uint16_t part_length =
+            part->len < remaining ? part->len : remaining;
+        t384_ncm_copy_segment(destination + copied,
+                              (const uint8_t *)part->payload,
+                              part_length);
+        copied = (uint16_t)(copied + part_length);
+        remaining = (uint16_t)(remaining - part_length);
+    }
+    return copied;
+}
 
 static dhcp_entry_t dhcp_entries[T384_NCM_CLIENT_COUNT]
     T384_NET_CONTROL_STORAGE = {
@@ -287,7 +396,7 @@ uint16_t tud_network_xmit_cb(uint8_t *destination, void *reference, uint16_t arg
 {
     (void)argument;
     struct pbuf *frame = (struct pbuf *)reference;
-    return pbuf_copy_partial(frame, destination, frame->tot_len, 0u);
+    return t384_ncm_copy_pbuf(destination, frame);
 }
 
 void tud_network_init_cb(void)

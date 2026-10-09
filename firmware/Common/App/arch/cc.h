@@ -13,6 +13,8 @@
 #define LWIP_CHKSUM_ALGORITHM 3
 #define LWIP_RAND() ((uint32_t)SysTick0->CNT ^ DBGMCU_GetCHIPID())
 
+typedef uint32_t t384_lwip_u32_alias_t __attribute__((may_alias));
+
 #if T384_NETWORK_ON_V5F && defined(Core_V5F)
 /* Relocate lwIP's generated heap/memp arrays out of the 19 KiB V5F local
  * .bss window.  The linker reserves .t384_net_heap in shared SRAM. */
@@ -54,32 +56,59 @@ static inline uint16_t t384_lwip_chksum_copy(void *destination,
         length = (uint16_t)(length - 2u);
     }
 
-    while (length > 7u) {
-        uint32_t first_word;
-        uint32_t second_word;
-        /* The byte/halfword prefix above aligns every eight-byte iteration.
-         * Keep alias-safe memcpy, but avoid byte loads and stack assembly on
-         * the V3F when reading a frame from the V5F memory banks. */
-        const uint8_t *aligned_src =
-            (const uint8_t *)__builtin_assume_aligned(src, 4u);
-        memcpy(&first_word, aligned_src, sizeof(first_word));
-        memcpy(dst, &first_word, sizeof(first_word));
-        src += 4;
-        dst += 4;
-        memcpy(&second_word, aligned_src + 4u, sizeof(second_word));
-        memcpy(dst, &second_word, sizeof(second_word));
-        src += 4;
-        dst += 4;
+    if (length > 7u &&
+        (((uintptr_t)src | (uintptr_t)dst) & 3u) == 0u) {
+        const t384_lwip_u32_alias_t *src32 =
+            (const t384_lwip_u32_alias_t *)__builtin_assume_aligned(src, 4u);
+        volatile t384_lwip_u32_alias_t *dst32 =
+            (volatile t384_lwip_u32_alias_t *)__builtin_assume_aligned(dst, 4u);
+        while (length > 7u) {
+            const uint32_t first_word = src32[0];
+            const uint32_t second_word = src32[1];
+            dst32[0] = first_word;
+            dst32[1] = second_word;
+            src32 += 2;
+            dst32 += 2;
+            src += 8;
+            dst += 8;
 
-        uint32_t next = sum + first_word;
-        if (next < sum) {
-            ++next;
+            uint32_t next = sum + first_word;
+            if (next < sum) {
+                ++next;
+            }
+            sum = next + second_word;
+            if (sum < next) {
+                ++sum;
+            }
+            length = (uint16_t)(length - 8u);
         }
-        sum = next + second_word;
-        if (sum < next) {
-            ++sum;
+    } else {
+        while (length > 7u) {
+            uint32_t first_word;
+            uint32_t second_word;
+            /* The source prefix above guarantees aligned reads. Keep the
+             * alias-safe fallback when the lwIP destination is not aligned. */
+            const uint8_t *aligned_src =
+                (const uint8_t *)__builtin_assume_aligned(src, 4u);
+            memcpy(&first_word, aligned_src, sizeof(first_word));
+            memcpy(dst, &first_word, sizeof(first_word));
+            src += 4;
+            dst += 4;
+            memcpy(&second_word, aligned_src + 4u, sizeof(second_word));
+            memcpy(dst, &second_word, sizeof(second_word));
+            src += 4;
+            dst += 4;
+
+            uint32_t next = sum + first_word;
+            if (next < sum) {
+                ++next;
+            }
+            sum = next + second_word;
+            if (sum < next) {
+                ++sum;
+            }
+            length = (uint16_t)(length - 8u);
         }
-        length = (uint16_t)(length - 8u);
     }
 
     sum = (sum >> 16) + (sum & 0xffffu);
